@@ -1,0 +1,12 @@
+# Office / WPS 临时锁文件
+.~*
+~$*
+
+# 作业说明文档（仅本地保留）
+COMP40040_Project.docx
+
+# 构建产物
+target/
+
+# macOS
+.DS_Store

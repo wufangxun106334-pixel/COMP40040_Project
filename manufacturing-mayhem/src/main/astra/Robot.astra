@@ -1,0 +1,94 @@
+// ============================================================================
+// Robot.astra —— 机器人 agent（行为层）
+//
+// 与 Main.astra 的关系：
+//   Main 负责搭场景并发号施令；Robot 负责"真正动手"。
+//   每个 Robot agent 由 Main 用 S.createAgent("<名字>", "Robot") 动态创建，
+//   名字必须与已存在的 Robot 工件同名（这里 S.name() 就返回该名字，例如 "r1"）。
+//
+// 生命周期：
+//   创建后 → initial !init() 自动执行（拿到工件句柄并聚焦）
+//          → 挂起等消息 → 收到 request transfer(from,to) → 执行搬运 → 回 inform
+//
+// ⚠️ 本文件是"示例实现"：每次搬完都无条件去充电，且没有任何失败回执。
+// ============================================================================
+agent Robot extends Base {
+    // initial 计划：agent 一被创建就自动触发（无需外部调用）
+    initial !init();
+
+    // ========================================================================
+    // [1] !init —— 启动自检：连接工作区、找到自己的工件、聚焦
+    // ========================================================================
+    plan +!init() {
+        // 加入 CArtAgO 工作区（工作区由 Main 提前 startService 建好）
+        cartago.link();
+
+        // 获取 Floorplan 句柄（此处是 lookup，不是新建）
+        !floorplan(cartago.ArtifactId _);
+
+        // 获取"我的"机器人工件句柄：名字取自 S.name()，即本 agent 的名字(如 r1)。
+        // 由于 Main 的 !setup 已经创建过 r1/r2 工件，这里走 lookup 分支，
+        // 顺带补记 chargePoint 信念，并把 robot(name, rid) 记进信念库。
+        !robot(S.name(), cartago.ArtifactId rid);
+
+        // 聚焦(focus)到自己的 Robot 工件 —— 关键一步。
+        // 只有聚焦某个工件，agent 才能观察到它的观察属性；
+        // Base 里的推理规则 inference at(...) 正是靠 cartago.at(location) 才能成立。
+        cartago.focus(rid);
+
+        // Sleep for a second to let the property
+        // updates get processed...
+        // 等 1 秒，让 CArtAgO 把工件的属性快照推送过来，避免后续读到过期值
+        S.sleep(1000);
+    }
+
+    // ========================================================================
+    // [2] @message(request, ...) —— 搬运任务处理器（一个搬运周期 = 4 步 + 充电）
+    //
+    // 触发条件：收到类型 request、内容 transfer(from, to) 的消息，
+    //          sender 为请求方（Main）。同一个 agent 的多个请求会串行执行。
+    //
+    // 执行序列：
+    //   ① !at(from)    走到源区（若已在则空操作；目标被占则失败）
+    //   ② !holding(_)  从源区工件 load 一件货
+    //   ③ !at(to)      走到目标区（先校验空闲再移动）
+    //   ④ !empty()     把货 unload 给目标区工件
+    //   ⑤ 回自己的充电点 charge()  ← 示例代码写死的"每次都充"
+    //   ⑥ send(inform, sender, transferred(from,to))  回执，解开 Main 的 wait
+    //
+    // ⚠️ 风险：任何一步抛异常（电量不足 / zone 被占 / 货物不匹配），
+    //          该计划失败且【不回 inform】，Main 会永久卡在 wait 上。
+    //          正式实现应加 try/recover 并回 failure 消息。
+    // ========================================================================
+    plan @message(request, string sender, transfer(string from, string to)) {
+        cartago.println("received request for transfer from: "  + from + " to: " +to);
+
+        // ① 移动到取货位置（from 可能是取料点 / 存储点 / 工作站）
+        !at(S.name(), from);
+        // ② 装载。第二个参数用匿名变量 _ 表示"不关心具体货物类型"
+        !holding(S.name(), string _);
+        // ③ 移动到卸货位置
+        !at(S.name(), to);
+        // ④ 卸载（货物类型由 unload 内部根据目标工件的需求判定）
+        !empty(S.name());
+
+        cartago.println("completed transfer from: "  + from + " to: " +to);
+
+        // Example Charging Step...
+        // ⑤ 示例充电：搬完就回充电点充一次。
+        //    charge() 是 durative（内部 sleep 1 秒），固定回充 300 能量。
+        //    真实设计应改为"电量低于阈值才充"，否则会浪费大量时间。
+        !at(S.name(), S.name()+"-charger");
+        ?robot(S.name(), cartago.ArtifactId rid);
+        cartago.println("Charging...");
+        cartago.operation(rid, charge());
+        cartago.println("Charged...");
+
+        // ⑥ 回执：告诉请求方搬运完成。
+        //    Main 侧的 @message(inform, ...) 收到后会 +transferred(from,to)，
+        //    从而解开 !transfer 计划里的 wait。
+        send(inform, sender, transferred(from, to));
+    }
+
+
+}

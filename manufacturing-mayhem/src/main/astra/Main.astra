@@ -1,0 +1,161 @@
+// ============================================================================
+// Main.astra —— 系统入口 agent
+// 职责：1) 搭建工厂场景（!setup）；2) 用一条写死的示例流程演示各工件的用法。
+// 启动方式：父 POM (astra-cartago-base) 中 astra.main=Main / astra.name=main，
+//           运行时由 ASTRA 启动名为 main 的 Main agent，触发下面的 !main 计划。
+// ============================================================================
+agent Main extends Base {
+
+    // ========================================================================
+    // [1] 入口计划：初始化运行时 + 建场景 + 跑一遍示例产线
+    // 参数 args 为命令行传入的启动参数列表（本例未使用）。
+    // ========================================================================
+    plan +!main(list args) {
+        // 启动 CArtAgO 工作区（Workbench）服务：所有 artifact 都活在这个工作区里
+        cartago.startService();
+        // 本 agent 加入工作区（相当于"连接"）。不 link 就无法 makeArtifact / operation
+        cartago.link();
+
+        // 一次性把所有工件（仓库、区域、订单、机器人、工作站）建出来
+        !setup();
+
+        // 重新获取 floorplan 的 ArtifactId。
+        // 注意：上面 !setup() 里已创建过 floorplan，这里走的是 Base 中的
+        //       try-lookup / recover-make 分支，实际是"查找"而非"新建"。
+        !floorplan(cartago.ArtifactId _);
+
+        // 动态创建名为 r1、类型为 Robot 的 agent（行为实体）。
+        // 与 !robot(...) 的区别：!robot 建的是 Robot "工件"（能力），
+        // 这里建的才是会思考、会发消息的 agent。
+        S.createAgent("r1", "Robot");
+
+        // 向 Floorplan 查询当前所有 zone 名称的列表。
+        // 这是"不假设场地写死"的正确入口：将来应据此动态识别各类角色，
+        // 但本示例只把它打印出来，后续流程仍然写死了 ap1 / ws1 / pp1。
+        ?locations(list L);
+        cartago.println("L=" + L);
+
+        // --------------------------------------------------------------------
+        // 以下是一条写死的示例生产流程（SOP）：
+        // 目标 = 用 ws1 把 apples + pastry 做成 apple-pie，并送到 pp1
+        // --------------------------------------------------------------------
+
+        // ① 让取料点 ap1 从仓库取出一个 apples（货暂存在 ap1 上，等机器人来拿）
+        !available("ap1", "apples");
+
+        // ② 让 r1 把 apples 从 ap1 搬运到 ws1（作为工作站的输入）
+        !transfer("r1", "ap1", "ws1");
+
+        // ③ 读取 ws1 还缺哪些输入（此刻会返回 ["pastry"]）。
+        //    用 inputsNeeded 属性驱动"下一步取什么料"，而不是手工写死
+        ?inputsNeeded("ws1", list items);
+        // ④ 取列表首项（P 是 Prelude 模块），让 ap1 从仓库取出 pastry
+        !available("ap1", P.headAsString(items));
+
+        // ⑤ 再让 r1 把 pastry 从 ap1 送到 ws1。
+        //    此时 ws1 输入凑齐，状态自动由 idle 变为 ready
+        !transfer("r1", "ap1", "ws1");
+
+        // ⑥ 查询 ws1 当前状态并打印（纯观察，不改变任何东西）
+        ?state("ws1", string state);
+        cartago.println("ws1 is: " + state);
+
+        // ⑦ 启动工作站生产：ready → active → sleep(配置的 2000ms) → done。
+        //    Base 中的 !operate 内部会轮询 ?state，直到读到 "done" 才返回
+        !operate("ws1");
+
+        // ⑧ 让 r1 把产出的 apple-pie 从 ws1 取走，先放到存储点 sp1 暂存
+        !transfer("r1", "ws1", "sp1");
+
+        // ⑨ 读出 sp1 里现在放的是什么（只打印，未做类型校验）
+        ?available("sp1", string spItem);
+
+        // ⑩ 让 r1 把成品从 sp1 送到包装点 pp1，交付完成
+        !transfer("r1", "sp1", "pp1");
+
+        // ⚠️ 注意：这里【没有】调用 !deliver("pp1")。
+        //    因此订单永远不会被标记为已结清（PackagingPoint.deliver() 本身
+        //    也只是个打印桩），后续"订单完成时间 / 价值统计"也无从谈起。
+    }
+
+    // ========================================================================
+    // [2] !transfer —— 向机器人"同步"下发一次搬运任务（请求/回复模式）
+    // 参数：name = 机器人名，from = 起点 zone，to = 终点 zone
+    //
+    // 这是 Main 与 Robot agent 之间唯一的通信方式，三步构成一次"远程调用"：
+    //   send(request, ...)   发请求
+    //   wait(...)            阻塞等待对方回信（BDI 层挂起）
+    //   -transferred(...)    收到后立即删除信念，避免污染下一次等待
+    //
+    // 局限：Main 在此是串行的，一次只能有一个 transfer 在飞；
+    //       若对方执行失败（电量不足 / 目标被占 / 报错）而【不回 inform】，
+    //       本计划会永久卡在 wait 上（死锁）——因为没有 failure 分支处理。
+    // ========================================================================
+    plan +!transfer(string name, string from, string to) {
+        send(request, name, transfer(from, to));
+        wait(transferred(from, to));
+        -transferred(from, to);
+    }
+
+    // ========================================================================
+    // [3] 消息处理器 —— 接收机器人搬运完成后的回信
+    // 触发条件：收到类型 inform、内容 transferred(from, to) 的消息，
+    //          sender 为发送者名字（即机器人名）。
+    // 作用：+transferred(from, to) 把该断言变成信念，
+    //       从而解开 [2] 中挂起的 wait，让 !main 继续往下执行。
+    // ========================================================================
+    plan @message(inform, string sender, transferred(string from, string to)) {
+        cartago.println(sender + " is at location: " + to);
+        +transferred(from, to);
+    }
+
+    // ========================================================================
+    // [4] !setup —— 搭建整座工厂（全场景唯一的定义处）
+    //
+    // 执行顺序有依赖，不能随意调换：
+    //   先建 Floorplan（各 zone 都要 install 到它身上）→ 再建各 zone；
+    //   工作站要先创建、再 configure。
+    //
+    // 最终产生 7 个 zone：
+    //   ap1, ap2（取料点）  sp1（存储点）  pp1（包装点）
+    //   ws1（工作站）       r1-charger, r2-charger（充电点）
+    // ========================================================================
+    plan +!setup() {
+        // --- 仓库：库存以"观察属性"形式存放，每种物料一个整数计数 ---
+        // 注意：Warehouse 没有 install 到 floorplan，因此它不算 zone，
+        //       机器人不能直接进入仓库，只能通过取料点取货。
+        !warehouse(cartago.ArtifactId wId);
+        !addToWarehouse("apples", 2);   // 初始库存：apples × 2
+        !addToWarehouse("pastry", 10);  // 初始库存：pastry × 10
+
+        // --- 场地总表：所有 zone 都通过 install + link("out-fp") 注册到它 ---
+        !floorplan(cartago.ArtifactId fpId);
+
+        // --- 取料点 ×2：负责从仓库"取料"，一次一件，取出后不可退回 ---
+        !accessPoint("ap1", cartago.ArtifactId ap1Id);
+        !accessPoint("ap2", cartago.ArtifactId ap2Id);
+
+        // --- 存储点 ×1：容量 1 件的临时缓冲，用于暂存原料或中间品 ---
+        !storagePoint("sp1", cartago.ArtifactId sp1Id);
+
+        // --- 包装点 ×1，并立即装入一张订单 ---
+        !packagingPoint("pp1", cartago.ArtifactId pp1Id);
+        // 订单内容为单个零件 apple-pie；装入后不可中途修改
+        !order("pp1", ["apple-pie"]);
+
+        // --- 机器人"工件" ×2 ---
+        // 每个 !robot 计划会：先建 <name>-charger 充电点，
+        // 再由充电点在 install 时创建对应的 Robot 工件，并把该充电点作为它的初始位置(home)。
+        // ⚠️ 这里只创建了工件；r2 并没有配套的 Robot agent（只有 r1 被 createAgent），
+        //    所以 r2 是一个无法行动的空壳。
+        !robot("r1", cartago.ArtifactId r1Id);
+        !robot("r2", cartago.ArtifactId r2Id);
+
+        // --- 工作站 ×1 + 配方配置 ---
+        !workstation("ws1", cartago.ArtifactId ws1Id);
+        // 配方：输入 apples + pastry → 产出 apple-pie，生产耗时 2000 毫秒。
+        // 注意 duration 必须是 long，故写作 2000l。
+        !configure("ws1", ["apples", "pastry"], "apple-pie", 2000l);
+    }
+
+}
