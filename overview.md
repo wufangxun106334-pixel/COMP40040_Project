@@ -156,3 +156,41 @@ transfer(r1, ws1, sp1)        ← 成品先丢进存储点
 4. **没有目标函数实现**：无计时、无订单价值、无产品清单读取。
 5. **没有背压/暂存策略**：`sp1` 建了但从没被 `give`，Storage Point 的完整通道（`load` 自 `StoragePoint` 合法）没被用到。
 6. 顺手可修的小 bug：`load`/`unload` 判电量误用了 `MOVE_COST`；`charge()` 不封顶可超 `maxEnergy`；`AccessPoint.retrieve` 在已持货时会被覆盖。
+
+---
+
+## 七、项目完成情况检查（2026-11-03）
+
+> 结论：整体 progress（进度）约 **Design 20% / Implementation 0%**。已有 analysis（分析）文档，但 ASTRA/Java 代码仍是起点版本，未改动。
+
+### 7.1 对照作业三大块
+
+| 评分块 | 占比 | 状态 | 说明 |
+|---|---|---|---|
+| **Design**（GAIA） | 40% | 🟡 仅 analysis 部分 | [M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) 已有 6 个 **Roles**（角色）、7 个 **Protocols**（协议）、**Organisational Rules**（组织规则）、role → plan **traceability**（可追溯性）映射；GAIA **Design models**（Agent Model / Services Model / Acquaintance Model）未正式写，§7 只是暂定预览 |
+| **Implementation**（ASTRA） | 40% | 🔴 未开始 | SOP M1–M5 全部 ⬜ |
+| **Report + Video** | 20% | 🔴 未开始 | SOP M6 |
+
+### 7.2 代码现状（逐项核实）
+
+| SOP 任务 | 检查结果 |
+|---|---|
+| M1-1 `Floorplan.zonesOfType` | ❌ 不存在 |
+| M1-2 `PackagingPoint.deliver()` 结单 + 换单 | ❌ 仍是只 `println` 的 **stub**（桩代码 / 占位实现），见 [PackagingPoint.java:38-44](manufacturing-mayhem/src/main/java/artifacts/PackagingPoint.java#L38-L44) |
+| M1-3 `Metrics.java` | ❌ 文件不存在 |
+| M1-4 bug：`load`/`unload` 判电量误用 `MOVE_COST` | ❌ 未修，见 [Robot.java:92](manufacturing-mayhem/src/main/java/artifacts/Robot.java#L92)、[Robot.java:120](manufacturing-mayhem/src/main/java/artifacts/Robot.java#L120) |
+| M2 去除 **hardcoded**（硬编码）zone/robot 名 | ❌ 三个 `.astra` 中仍有 **35 处** `"ap1"`/`"r1"` 等 **literal**（字面量） |
+| Git working tree | clean；已有 commit 仅为源码注释 + 文档 |
+
+> `mvn compile` 本次未执行（被工具 hook 拦截）；代码未改动，编译状态与起点版本一致。
+
+### 7.3 SOP 8 条 acceptance criteria（验收标准）
+
+- 第 1–7 条（不假设数量、**concurrency**（并发）、多层 **dependency**（依赖）、订单闭环、metrics、自动充电、不 **deadlock**（死锁））：**均无代码证据**。
+- 第 8 条「设计可追溯」：文档已打地基，需代码落地后才能真正对应。
+
+### 7.4 下一步
+
+1. **补完 GAIA Design 阶段**：Agent Model（`Main` ×1 + `Robot` ×N）、Services Model、Acquaintance Model —— 40% 设计分不能只靠 analysis。
+2. **开始 M1**：4 处 Java 改动，量小但是后续所有工作的前提。
+3. 风险：M4（任务编排 + 并发）约占一半工作量，需尽早启动。
