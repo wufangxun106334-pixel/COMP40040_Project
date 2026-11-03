@@ -1,8 +1,9 @@
 package artifacts;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
-
+import java.util.List;
 import cartago.Artifact;
 import cartago.ArtifactId;
 import cartago.LINK;
@@ -88,4 +89,15 @@ public class Floorplan extends Artifact {
         Location location = locations.get(name);
         occupied.set(location.isOccupied());
     }
+    @OPERATION
+    public void zonesOfType(String type, OpFeedbackParam<List<String>> result) {
+    List<String> names = new ArrayList<>();
+    for (Map.Entry<String, Location> e : locations.entrySet()) {
+        // "artifacts.AccessPoint" 与 "AccessPoint" 都接受
+        String t = e.getValue().id().getArtifactType();
+        if (t.equals(type) || t.equals("artifacts." + type)) names.add(e.getKey());
+    }
+    result.set(names);
+    }
+
 }

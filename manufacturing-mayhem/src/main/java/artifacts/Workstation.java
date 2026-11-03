@@ -22,23 +22,31 @@ public class Workstation extends Artifact {
     private static final String INPUTS = "inputs";
     private static final String STATE = "state";
 
-    private Item[] inputs;
+    private Item[] inputs = new Item[0];
     private Item output;
 
     @OPERATION
     public void init() {
         defineObsProperty(STATE, IDLE);
+        // 属性只在此处定义一次，configure 一律 update，从而允许重新配置（M1-5）
+        defineObsProperty(INPUTS, new ArrayList<String>());
+        defineObsProperty("output", "none");
+        defineObsProperty(INPUTS_NEEDED, new ArrayList<String>());
+        defineObsProperty("duration", 0L);
     }
 
     @OPERATION
     public void configure(List<String> inputTypes, String outputType, long duration) throws Exception {
-        defineObsProperty("inputs", inputTypes);
-        defineObsProperty("output", outputType);
+        // 仅在 IDLE、未持有输入件、无待取产出时允许重新配置，避免丢件
+        if (!getObsProperty(STATE).stringValue().equals(IDLE) || output != null || holdsInputs())
+            throw new Exception("Workstation: " + getId().getName() + " cannot be configured in current state");
+        updateObsProperty(INPUTS, new ArrayList<String>(inputTypes));
+        updateObsProperty("output", outputType);
 
         inputs = new Item[inputTypes.size()];
 
-        defineObsProperty(INPUTS_NEEDED, new ArrayList<String>(inputTypes));
-        defineObsProperty("duration", duration);
+        updateObsProperty(INPUTS_NEEDED, new ArrayList<String>(inputTypes));
+        updateObsProperty("duration", duration);
 
         execLinkedOp("out-fp", "setCustomField", getId().getName(), "inputs", getObsProperty("inputs").getValue().toString());
         //execLinkedOp("out-fp", "setCustomField", getId().getName(), "outputs", getObsProperty("outputs").getValue().toString());
@@ -68,6 +76,11 @@ public class Workstation extends Artifact {
         execLinkedOp("out-fp", "setStatus", getId().getName(), DONE);
     }
     
+    private boolean holdsInputs() {
+        for (Item i : inputs) if (i != null) return true;
+        return false;
+    }
+
     @SuppressWarnings("unchecked")
     private List<String> createInputsNeededList() {
         List<String> inputs = (List<String>) getObsProperty(INPUTS).getValue();

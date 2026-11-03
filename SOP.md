@@ -1,7 +1,7 @@
 # SOP — Manufacturing Mayhem（最小可交路线）
 
 > 目标档位：**最小可交**（能验收、能讲清设计↔实现对应，不追求性能）
-> 配套笔记：[week4.md](week4.md)（起点代码逐项核对）
+> 配套笔记：[overview.md](overview.md)（起点代码逐项核对）
 > 起点代码：`manufacturing-mayhem/`（已加中文注释）
 
 ---
@@ -29,9 +29,6 @@
 |---|---|---|
 | 起点代码 917 有效行（ASTRA 270 + Java 647） | `manufacturing-mayhem/` | ✅ 可用 |
 | `Base.astra` 计划库（创建 + 读属性的样板） | `src/main/astra/Base.astra` | ✅ 复用，**不要重写** |
-| 三个 astra 文件的中文注释 | 同上 | ✅ 已完成 |
-| 起点代码逐项核对笔记 | [week4.md](week4.md) | ✅ 已完成 |
-| GitHub 备份 | `origin/main` | ✅ 已推送 |
 
 **可以直接复用的东西**（省事重点）：
 
@@ -46,12 +43,12 @@
 
 | 约束 | 后果 |
 |---|---|
-| 每个 zone **恰好 1 个角色**，同时**只能 1 个 robot** | 所有调度必须先抢 zone，`Floorplan` 被占会抛异常 |
+| 每个 zone **恰好 1 个角色**，同时**只能 1 个 robot** | 所有调度必须先抢 zone，`Floorplan` 被占会抛异常；`Floorplan.move` 内部 `sleep(2000)`，同一 artifact 操作互斥 → 全场 move **可能被串行化**（见 §5 风险） |
 | Access Point **取料后不可退回** | 取料时机必须想清楚，否则货卡在 ap 上 |
 | 订单装入后**不可中途修改**，必须**显式 `deliver`** | 忘记 deliver → 订单永远不结清 |
 | **不假设 agent / zone 数量** | 禁止出现 `ap1`、`r1` 这类硬编码 |
 | `PackagingPoint.setOrder` **只能调用一次** | 换单需要先改 Java（见 M1-2） |
-| `Workstation` 创建**无幂等保护**，重复建会抛异常 | 场景构建要判重 |
+| `Workstation` 创建**无幂等保护**，重复建会抛异常；`configure` 用 `defineObsProperty`，**只能配置一次** | 场景构建要判重；中途换产品需先改 Java（见 M1-5） |
 | `duration` 参数是 `long`，必须写 `2000l` | 语法错 |
 | `Warehouse` **不是 zone**，机器人进不去 | 取货只能经 Access Point |
 | 一次移动实际耗时 **≈4 秒**（两层 `sleep 2000`） | 调度估算时别按 2 秒算 |
@@ -64,38 +61,13 @@
 
 ```mermaid
 graph LR
-    M0[M0 GAIA 分析模型] --> M1[M1 补工件缺口<br/>Java]
-    M1 --> M2[M2 动态场景构建]
+    M1[M1 补工件缺口<br/>Java] --> M2[M2 动态场景构建]
     M2 --> M3[M3 订单闭环]
     M3 --> M4[M4 任务编排 + 并发]
     M4 --> M5[M5 策略打磨]
     M5 --> M6[M6 报告 + 视频]
     M3 -.-> M6
-    M0 -.-> M6
 ```
-
----
-
-### M0 — GAIA 分析模型（纯文档，先做）
-
-**为什么第一步**：ASTRA 的 agent 类型、计划分组、消息协议都从这里推导。**先写代码再补设计 = 返工**。
-
-产出：**角色表 + 交互表**，每个角色一行「职责 / 权限 / 活动 / 协议」。
-
-> ✅ **M0 交付物：[M0-GAIA-分析模型.md](M0-GAIA-分析模型.md)**（6 角色 + 7 协议 + 组织规则 + 角色→计划映射）
-
-候选角色（GAIA 正式化后定稿，先按这个切分代码骨架）：
-
-| 候选角色 | 职责 | 对应代码位置（预期） |
-|---|---|---|
-| Order Manager | 装载订单、追踪零件到齐、触发 deliver、计时 | `Main.astra` 订单计划组 |
-| Production Planner | 展开多层依赖，算出要生产/搬运什么 | `Main.astra` 编排计划组 |
-| Resource Broker | 分配 zone 与机器人，处理互斥 | `Main.astra` 或独立 `Broker.astra` |
-| Transporter (×N) | 执行搬运，报告能量与位置 | `Robot.astra`（已存在，需泛化） |
-| Workstation Monitor | 盯工作站状态，READY 即触发 operate | `Main.astra` 监视计划组 |
-| Metrics Keeper | 记录时间与价值 | 新 `Metrics` 工件 + 查询计划 |
-
-验收：能口头说明「用户需求 → 角色 → 交互协议 → ASTRA 计划」这条链每一跳。
 
 ---
 
@@ -105,10 +77,11 @@ graph LR
 
 | # | 改什么 | 文件 | 具体动作 |
 |---|---|---|---|
-| M1-1 | 让 agent 能**按角色查 zone** | `Floorplan.java` | 增加 `zonesOfType(String type, OpFeedbackParam<List<String>>)`，返回某角色下所有 zone 名 |
-| M1-2 | 订单能**结清 + 换单** | `PackagingPoint.java` | 补状态属性（`loaded`/`fulfilled`/`cleared`）；`deliver()` 真正重置 `order`/`outstanding`；允许再次 `setOrder` |
-| M1-3 | 能**计时计价** | 新建 `artifacts/Metrics.java` | `orderStarted(id, time)` / `orderFulfilled(id, time, value)` / 观察属性 `totalTime`、`totalValue`、`ordersDone` |
-| M1-4 | 修 3 个 bug | `Robot.java`、`AccessPoint.java` | `load`/`unload` 判电量误用 `MOVE_COST` → 改 `LOAD_COST`；`charge()` 加 `maxEnergy` 封顶；`retrieve` 在已持货时拒绝 |
+| M1-1 ✅ | 让 agent 能**按角色查 zone** | `Floorplan.java` | 已实现 `zonesOfType(String type, OpFeedbackParam<List<String>>)`；ASTRA 端 `cartago.operation(fpId, zonesOfType("AccessPoint", list aps))` 实测返回 `["ap2","ap1"]` → **Java `List<String>` 可直接回传为 ASTRA `list`**，无需 `pe.listValues`（结果顺序不固定） |
+| M1-2 🟡 | 订单能**结清 + 换单** | `PackagingPoint.java` | 补状态属性（`loaded`/`fulfilled`/`cleared`）；`deliver()` 真正重置 `order`/`outstanding`；允许再次 `setOrder`（已实现，编译通过，待运行测试） |
+| M1-3 🟡 | 能**计时计价** | 新建 `artifacts/Metrics.java` | 已实现（编译通过，待运行测试）：`orderStarted(id)` / `orderFulfilled(id, value)`，时间由工件自取；观察属性 `totalTime`、`totalValue`、`ordersDone`；重复计数抛异常 |
+| M1-4 🟡 | 修 3 个 bug | `Robot.java`、`AccessPoint.java` | `load`/`unload` 判电量误用 `MOVE_COST` → 改 `LOAD_COST`；`charge()` 加 `maxEnergy` 封顶；`retrieve` 在已持货时拒绝（已修，示例产线回归通过；异常分支待测） |
+| M1-5 🟡 | 工作站能**重复配置** | `Workstation.java` | `init()` 预定义 `inputs`/`output`/`inputsNeeded`/`duration`；`configure` 改用 `updateObsProperty`，仅允许在 IDLE 时调用（支撑 §9.3 ConfigureWorkstation）（已实现，示例产线回归通过；重新配置待测） |
 
 验收：`mvn -o compile` 通过；写一个临时 `!main` 逐条调用新 API 并打印，全部有正确输出。
 
@@ -170,21 +143,25 @@ graph LR
 | # | 做什么 |
 |---|---|
 | M6-1 | 报告：**反思挑战与经验教训**（不是罗列功能），突出设计决策为什么这么定 |
-| M6-2 | 把 M0 的 GAIA 模型放进报告，**每条设计指到具体计划名/行号** |
+| M6-2 | 把 [M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) §2–§9 的 GAIA 模型整理成**英文**放进报告，**每条设计指到具体计划名/行号** |
 | M6-3 | 3–5 分钟视频：镜头对准「设计文档 → 代码 → 运行画面」的对应，不追求大片效果 |
 
 ---
 
 ## 4. 当前进度
 
-| 阶段 | 状态 |
-|---|---|
-| 克隆起点代码 | ✅ 完成 |
-| 三个 astra 文件加中文注释 | ✅ 完成 |
-| 起点代码与作业要求逐项核对 | ✅ 完成（[week4.md](week4.md)） |
-| GitHub 备份 | ✅ 完成 |
-| **M0 GAIA 分析 + 设计模型** | ✅ 完成（[M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) §2–§5 分析、§9 设计：3 类 agent + CNP） |
-| M1 – M6 | ⬜ 未开始（下一步：**M1 补工件缺口**） |
+| 阶段 | 类型 | 语言 / 文件 | 要做什么 | 状态 |
+|---|---|---|---|---|
+| **M1** 补工件缺口 | coding | **Java**（CArtAgO artifact） | `Floorplan.zonesOfType`、`PackagingPoint.deliver` 结单换单、新建 `Metrics.java`、修 3 个 bug、`configure` 可重复（M1-5） | ⬜ **下一步** |
+| **M2** 动态场景 | coding | **ASTRA** | 去掉 35 处硬编码 `ap1` / `r1`，改成列表循环创建 | ⬜ |
+| **M3** 订单闭环 | coding | ASTRA | LoadOrder → DeliverOrder → 换单 | ⬜ |
+| **M4** 任务编排 + 并发 | coding（**工作量最大**） | ASTRA：新建 `Manager.astra` / `Broker.astra` | 依赖 DAG、CNP 投标、`failure` 重派 | ⬜ |
+| **M5** 策略打磨 | coding（可砍） | ASTRA | 阈值充电、storage 暂存 | ⬜ |
+| **M6** 报告 + 视频 | 非 coding | — | 英文 report、3–5 分钟视频 | ⬜ |
+
+> **提醒**
+> 1. Design 不是一次性的：coding 中若发现设计走不通（如 CNP 的 deadline 在 ASTRA 里难实现），**回头改 [M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) §9**，保持 design ↔ implementation 一致。
+> 2. 最终 report 需**英文**，M6 时把 M0 文档里的 GAIA 模型整理成英文版。
 
 ---
 
@@ -192,8 +169,9 @@ graph LR
 
 | 风险 | 应对 |
 |---|---|
-| **先写代码后补设计** → 设计↔实现对不上，丢 40% | 严格执行 M0 → M1 顺序，M0 定稿前不写实现代码 |
+| **设计 ↔ 实现漂移** → 代码偏离 §9 设计，丢 40% | 每改一处协议 / 计划，同步更新 [M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) §5 与 §9 |
 | **M4 范围失控** | 先做「2 机器人 + 单层依赖」能跑通，再叠多层依赖 |
 | 一次移动≈4 秒，调试周期长 | 临时把 `Thread.sleep` 调小（如 200ms）加速调试，交付前改回 |
+| **`Floorplan.move` 串行化**：sleep 在 Floorplan 内，多机器人 move 可能排队 → 削弱验收项 2 | M4 先实测两条 transfer 是否时间重叠；若串行，把 `sleep` 移到 `Robot.move` 中、Floorplan 只做瞬时占位（需同步改 §9 设计说明） |
 | `Main` 单点卡死 | M4-4 的 `failure` + 超时是硬要求，不是加分项 |
 | 设计文档写成功能清单 | GAIA 要写 **role / interaction / organisation rule**，不是"系统能做什么" |

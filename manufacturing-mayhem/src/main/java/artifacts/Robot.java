@@ -69,7 +69,8 @@ public class Robot extends Artifact {
         if (deviceId.getArtifactType().equals("artifacts.RobotChargePoint")) {
             execLinkedOp("out-fp", "setRobotField", getId().getName(), "status", CHARGING);
             Thread.sleep(1000);
-            updateObsProperty(ENERGY, getObsProperty(ENERGY).intValue() + RECHARGE_AMOUNT);
+            // 充电封顶 maxEnergy（M1-4）
+            updateObsProperty(ENERGY, Math.min(getObsProperty(MAX_ENERGY).intValue(), getObsProperty(ENERGY).intValue() + RECHARGE_AMOUNT));
             execLinkedOp("out-fp", "setRobotField", getId().getName(), "status", IDLE);
             execLinkedOp("out-fp", "setRobotField", getId().getName(), "energy", getObsProperty(ENERGY).stringValue());
         }
@@ -89,7 +90,7 @@ public class Robot extends Artifact {
     @OPERATION
     public void load() throws Exception {
         int energy = getObsProperty(ENERGY).intValue();
-        if (energy < MOVE_COST) throw new Exception("Insufficient Energy to load: " + getId().getName());
+        if (energy < LOAD_COST) throw new Exception("Insufficient Energy to load: " + getId().getName());
 
         String at = getObsProperty(AT).stringValue();
         ArtifactId did = getDeviceArtifactId(at);
@@ -117,7 +118,7 @@ public class Robot extends Artifact {
     @OPERATION
     public void unload() throws Exception {
         int energy = getObsProperty(ENERGY).intValue();
-        if (energy < MOVE_COST) throw new Exception("Insufficient Energy to unload: " + getId().getName());
+        if (energy < LOAD_COST) throw new Exception("Insufficient Energy to unload: " + getId().getName());
 
         String at = getObsProperty(AT).stringValue();
         ArtifactId did = getDeviceArtifactId(at);

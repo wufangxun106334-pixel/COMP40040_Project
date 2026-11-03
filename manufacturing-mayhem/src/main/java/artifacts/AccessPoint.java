@@ -26,7 +26,9 @@ public class AccessPoint extends Artifact {
     }
 
     @OPERATION
-    public void retrieve(String type) throws OperationException {
+    public void retrieve(String type) throws Exception {
+        // 已有物品未被取走时拒绝再取，避免覆盖导致物品丢失（M1-4）
+        if (this.item != null) throw new Exception("Access Point " + getId().getName() + ": ITEM ALREADY AVAILABLE (" + this.item.type() + ")");
         OpFeedbackParam<Item> item = new OpFeedbackParam<>();
         execLinkedOp("out-fp", "setStatus", getId().getName(), "retrieving");
         execLinkedOp("out-1", "retrieve", type, item);

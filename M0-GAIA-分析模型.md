@@ -127,7 +127,7 @@ tags: [COMP40040, GAIA, MAS, analysis, manufacturing-mayhem]
 | **P3** | Work-Order | PP | WM | 某 WS 输入将齐 / 收到 outputReady | `request(operate, ws)` ↔ `inform(outputReady, ws, item)` | WS 产出成品 | WS 未 ready → 等待 |
 | **P4** | Transport-Assign（**Contract Net**，见 §9.2） | RB | T（全部可用 Robot） | 有任务 + 有可用机器人 | `cfp(transport)` → `propose(cost)\|refuse` → `accept-proposal\|reject-proposal` | 中标机器人执行搬运 | 全员 refuse / 超时无标 → 任务回队列重发 |
 | **P5** | Transport-Result | T | RB（转 PP） | 搬运结束 | `inform(transferred, from, to)` / `inform(failure, reason)` | PP 更新任务状态 | PP 重派任务 |
-| **P6** | Metrics-Record | OM | MK | 订单开始 / 完成 | `inform(orderStarted, id, t)` / `inform(orderFulfilled, id, t, value)` | 计入统计 | — |
+| **P6** | Metrics-Record | OM | MK | 订单开始 / 完成 | `inform(orderStarted, id)` / `inform(orderFulfilled, id, value)`（时间由 `Metrics` 工件自取） | 计入统计 | — |
 | **P7** | Charge-Notify | T | RB | 电量 < 阈值 | `inform(charging)` → …充电… → `inform(charged)` | RB 在充电期间不向其发 cfp | —（充电点为机器人专属，无争抢） |
 
 > **对照现有代码**：当前只有 `P4/P5` 的雏形——`Main` 用 `send(request, robot, transfer(from,to))` + `wait(transferred(from,to))`（见 `Main.astra` `+!transfer`），`Robot.astra` 用 `@message(request,...,transfer(from,to))` 接收、`send(inform, sender, transferred(from,to))` 回复。**P1、P2、P3、P5-failure、P6、P7 都是新增。**
@@ -145,7 +145,7 @@ tags: [COMP40040, GAIA, MAS, analysis, manufacturing-mayhem]
 | `failure(string reason)` | T → RB/PP | 失败回执（**新增，防死锁**） |
 | `operate(string ws)` | PP → WM | 请求运行工作站 |
 | `outputReady(string ws, string item)` | WM → PP | 产出就绪 |
-| `orderStarted(string id, long t)` / `orderFulfilled(string id, long t, int value)` | OM → MK | 订单事件 |
+| `orderStarted(string id)` / `orderFulfilled(string id, int value)` | OM → MK | 订单事件；时间戳由 `Metrics` 用 `System.currentTimeMillis()` 统一取，保证单一时钟 |
 
 ### 3.3 交互总览图
 
