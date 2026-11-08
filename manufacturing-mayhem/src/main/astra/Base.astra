@@ -34,6 +34,7 @@ agent Base {
         formula workstation(string, cartago.ArtifactId);  // 工作站
 
         formula packagingPoint(string, cartago.ArtifactId); // 包装点
+        formula zoneOf(string, string);                   // zoneOf(角色, zone 名)：由 !discoverZones 从 Floorplan 发现（M2-2）
     }
 
     // ------------------------------------------------------------------------
@@ -394,4 +395,16 @@ agent Base {
         //cartago.println("ws1 is: " + state);
         cartago.println(name + " is: " + state);
     }
+
+    // M2-2：从 Floorplan 动态发现 zone，按角色存成 belief
+    plan +!discoverZones() : floorplan(cartago.ArtifactId fpId) {
+        forall (string role : ["AccessPoint", "StoragePoint", "PackagingPoint", "Workstation", "RobotChargePoint"]) {
+            cartago.operation(fpId, zonesOfType(role, list names));
+            forall (string name : names) {
+                +zoneOf(role, name);
+            }
+            cartago.println("[discover] " + role + " = " + names);
+        }
+    }
+
 }

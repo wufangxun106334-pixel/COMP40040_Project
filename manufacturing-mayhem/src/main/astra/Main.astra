@@ -7,6 +7,37 @@
 agent Main extends Base {
 
     // ========================================================================
+    // [0] 场景数据（M2-1）—— 以初始信念（initial belief）描述，换场景只改这里
+    //   zone(类型, 名字)            类型：ap / sp / pp / ws
+    //   robotSpec(名字)             每个机器人自动配一个 <名字>-charger 充电点
+    //   stock(物料, 数量)           仓库初始库存
+    //   recipe(工作站, 输入, 产出, 耗时ms)   duration 为 long，须写 2000l
+    //   initialOrder(包装点, 零件)   示例订单（M3 订单闭环后移出 setup）
+    // ========================================================================
+    types scenario {
+        formula zone(string, string);
+        formula robotSpec(string);
+        formula stock(string, int);
+        formula recipe(string, list, string, long);
+        formula initialOrder(string, list);
+    }
+
+    initial stock("apples", 2);
+    initial stock("pastry", 10);
+
+    initial zone("ap", "ap1");
+    initial zone("ap", "ap2");
+    initial zone("sp", "sp1");
+    initial zone("pp", "pp1");
+    initial zone("ws", "ws1");
+
+    initial robotSpec("r1");
+    initial robotSpec("r2");
+
+    initial recipe("ws1", ["apples", "pastry"], "apple-pie", 2000l);
+    initial initialOrder("pp1", ["apple-pie"]);
+
+    // ========================================================================
     // [1] 入口计划：初始化运行时 + 建场景 + 跑一遍示例产线
     // 参数 args 为命令行传入的启动参数列表（本例未使用）。
     // ========================================================================
@@ -24,54 +55,45 @@ agent Main extends Base {
         //       try-lookup / recover-make 分支，实际是"查找"而非"新建"。
         !floorplan(cartago.ArtifactId _);
 
-        // 动态创建名为 r1、类型为 Robot 的 agent（行为实体）。
-        // 与 !robot(...) 的区别：!robot 建的是 Robot "工件"（能力），
-        // 这里建的才是会思考、会发消息的 agent。
-        S.createAgent("r1", "Robot");
+        // M2-3：按场景信念为每个机器人创建一个 Robot agent（agent 名 = 工件名，
+        //       Robot.astra 用 S.name() 找回自己的工件，故无需任何写死的名字）
+        foreach (robotSpec(string name)) {
+            S.createAgent(name, "Robot");
+        }
 
-        // 向 Floorplan 查询当前所有 zone 名称的列表。
-        // 这是"不假设场地写死"的正确入口：将来应据此动态识别各类角色，
-        // 但本示例只把它打印出来，后续流程仍然写死了 ap1 / ws1 / pp1。
-        ?locations(list L);
-        cartago.println("L=" + L);
+        // M2-2：从 Floorplan 动态发现 zone，存为 zoneOf(角色, 名字) 信念
+        !discoverZones();
 
         // --------------------------------------------------------------------
-        // 以下是一条写死的示例生产流程（SOP）：
-        // 目标 = 用 ws1 把 apples + pastry 做成 apple-pie，并送到 pp1
+        // M2-4：示例生产流程，所有 zone / 机器人名都来自信念查询，不含字面量。
+        // 目标 = 用一个工作站凑齐输入 → 生产 → 经存储点 → 送到包装点。
+        // （单机器人顺序执行；多机器人并发与任务分配见 M4）
         // --------------------------------------------------------------------
+        ?zoneOf("Workstation", string ws);
+        ?zoneOf("AccessPoint", string ap);
+        ?zoneOf("StoragePoint", string sp);
+        ?zoneOf("PackagingPoint", string pp);
+        ?robot(string r, cartago.ArtifactId rid);
+        cartago.println("[plan] robot=" + r + " ap=" + ap + " ws=" + ws + " sp=" + sp + " pp=" + pp);
 
-        // ① 让取料点 ap1 从仓库取出一个 apples（货暂存在 ap1 上，等机器人来拿）
-        !available("ap1", "apples");
+        // ① 由 inputsNeeded 驱动取料：缺什么取什么，直到工作站变为 ready
+        ?state(ws, string state);
+        while (state ~= "ready") {
+            ?inputsNeeded(ws, list items);
+            !available(ap, P.headAsString(items));
+            !transfer(r, ap, ws);
+            ?state(ws, string state2);
+            state = state2;
+        }
+        cartago.println(ws + " is: " + state);
 
-        // ② 让 r1 把 apples 从 ap1 搬运到 ws1（作为工作站的输入）
-        !transfer("r1", "ap1", "ws1");
+        // ② 生产：ready → active → done（!operate 内部轮询直到 done）
+        !operate(ws);
 
-        // ③ 读取 ws1 还缺哪些输入（此刻会返回 ["pastry"]）。
-        //    用 inputsNeeded 属性驱动"下一步取什么料"，而不是手工写死
-        ?inputsNeeded("ws1", list items);
-        // ④ 取列表首项（P 是 Prelude 模块），让 ap1 从仓库取出 pastry
-        !available("ap1", P.headAsString(items));
-
-        // ⑤ 再让 r1 把 pastry 从 ap1 送到 ws1。
-        //    此时 ws1 输入凑齐，状态自动由 idle 变为 ready
-        !transfer("r1", "ap1", "ws1");
-
-        // ⑥ 查询 ws1 当前状态并打印（纯观察，不改变任何东西）
-        ?state("ws1", string state);
-        cartago.println("ws1 is: " + state);
-
-        // ⑦ 启动工作站生产：ready → active → sleep(配置的 2000ms) → done。
-        //    Base 中的 !operate 内部会轮询 ?state，直到读到 "done" 才返回
-        !operate("ws1");
-
-        // ⑧ 让 r1 把产出的 apple-pie 从 ws1 取走，先放到存储点 sp1 暂存
-        !transfer("r1", "ws1", "sp1");
-
-        // ⑨ 读出 sp1 里现在放的是什么（只打印，未做类型校验）
-        ?available("sp1", string spItem);
-
-        // ⑩ 让 r1 把成品从 sp1 送到包装点 pp1，交付完成
-        !transfer("r1", "sp1", "pp1");
+        // ③ 产出先暂存到存储点，再送到包装点
+        !transfer(r, ws, sp);
+        ?available(sp, string spItem);
+        !transfer(r, sp, pp);
 
         // ⚠️ 注意：这里【没有】调用 !deliver("pp1")。
         //    因此订单永远不会被标记为已结清（PackagingPoint.deliver() 本身
@@ -110,52 +132,42 @@ agent Main extends Base {
     }
 
     // ========================================================================
-    // [4] !setup —— 搭建整座工厂（全场景唯一的定义处）
+    // [4] !setup —— 按 [0] 的场景信念搭建工厂（列表驱动，不含任何写死的名字）
     //
     // 执行顺序有依赖，不能随意调换：
-    //   先建 Floorplan（各 zone 都要 install 到它身上）→ 再建各 zone；
-    //   工作站要先创建、再 configure。
-    //
-    // 最终产生 7 个 zone：
-    //   ap1, ap2（取料点）  sp1（存储点）  pp1（包装点）
-    //   ws1（工作站）       r1-charger, r2-charger（充电点）
+    //   仓库 → Floorplan（各 zone 都要 install 到它身上）→ zone → 机器人；
+    //   工作站要先创建、再 configure；包装点要先创建、再装订单。
     // ========================================================================
     plan +!setup() {
-        // --- 仓库：库存以"观察属性"形式存放，每种物料一个整数计数 ---
-        // 注意：Warehouse 没有 install 到 floorplan，因此它不算 zone，
-        //       机器人不能直接进入仓库，只能通过取料点取货。
         !warehouse(cartago.ArtifactId wId);
-        !addToWarehouse("apples", 2);   // 初始库存：apples × 2
-        !addToWarehouse("pastry", 10);  // 初始库存：pastry × 10
+        foreach (stock(string item, int qty)) {
+            !addToWarehouse(item, qty);
+        }
 
-        // --- 场地总表：所有 zone 都通过 install + link("out-fp") 注册到它 ---
         !floorplan(cartago.ArtifactId fpId);
 
-        // --- 取料点 ×2：负责从仓库"取料"，一次一件，取出后不可退回 ---
-        !accessPoint("ap1", cartago.ArtifactId ap1Id);
-        !accessPoint("ap2", cartago.ArtifactId ap2Id);
+        foreach (zone(string type, string name)) {
+            !createZone(type, name);
+        }
 
-        // --- 存储点 ×1：容量 1 件的临时缓冲，用于暂存原料或中间品 ---
-        !storagePoint("sp1", cartago.ArtifactId sp1Id);
+        // 每个 !robot 会先建 <name>-charger 充电点，再建 Robot 工件并以充电点为 home
+        foreach (robotSpec(string name)) {
+            !robot(name, cartago.ArtifactId rid);
+        }
 
-        // --- 包装点 ×1，并立即装入一张订单 ---
-        !packagingPoint("pp1", cartago.ArtifactId pp1Id);
-        // 订单内容为单个零件 apple-pie；装入后不可中途修改
-        !order("pp1", ["apple-pie"]);
+        foreach (recipe(string ws, list inputs, string output, long duration)) {
+            !configure(ws, inputs, output, duration);
+        }
 
-        // --- 机器人"工件" ×2 ---
-        // 每个 !robot 计划会：先建 <name>-charger 充电点，
-        // 再由充电点在 install 时创建对应的 Robot 工件，并把该充电点作为它的初始位置(home)。
-        // ⚠️ 这里只创建了工件；r2 并没有配套的 Robot agent（只有 r1 被 createAgent），
-        //    所以 r2 是一个无法行动的空壳。
-        !robot("r1", cartago.ArtifactId r1Id);
-        !robot("r2", cartago.ArtifactId r2Id);
-
-        // --- 工作站 ×1 + 配方配置 ---
-        !workstation("ws1", cartago.ArtifactId ws1Id);
-        // 配方：输入 apples + pastry → 产出 apple-pie，生产耗时 2000 毫秒。
-        // 注意 duration 必须是 long，故写作 2000l。
-        !configure("ws1", ["apples", "pastry"], "apple-pie", 2000l);
+        foreach (initialOrder(string pp, list items)) {
+            !order(pp, items);
+        }
     }
+
+    // 按类型分派到 Base.astra 的创建计划；未知类型无匹配计划 → 报错，便于发现场景写错
+    plan +!createZone("ap", string name) { !accessPoint(name, cartago.ArtifactId aid); }
+    plan +!createZone("sp", string name) { !storagePoint(name, cartago.ArtifactId aid); }
+    plan +!createZone("pp", string name) { !packagingPoint(name, cartago.ArtifactId aid); }
+    plan +!createZone("ws", string name) { !workstation(name, cartago.ArtifactId aid); }
 
 }

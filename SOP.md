@@ -47,8 +47,7 @@
 | Access Point **取料后不可退回** | 取料时机必须想清楚，否则货卡在 ap 上 |
 | 订单装入后**不可中途修改**，必须**显式 `deliver`** | 忘记 deliver → 订单永远不结清 |
 | **不假设 agent / zone 数量** | 禁止出现 `ap1`、`r1` 这类硬编码 |
-| `PackagingPoint.setOrder` **只能调用一次** | 换单需要先改 Java（见 M1-2） |
-| `Workstation` 创建**无幂等保护**，重复建会抛异常；`configure` 用 `defineObsProperty`，**只能配置一次** | 场景构建要判重；中途换产品需先改 Java（见 M1-5） |
+| `Workstation` 创建**无幂等保护**，重复建会抛异常；`configure` 仅 IDLE 且无在制件 / 待取产出时可重新配置（M1-5） | 场景构建要判重；换产品前须等工作站清空 |
 | `duration` 参数是 `long`，必须写 `2000l` | 语法错 |
 | `Warehouse` **不是 zone**，机器人进不去 | 取货只能经 Access Point |
 | 一次移动实际耗时 **≈4 秒**（两层 `sleep 2000`） | 调度估算时别按 2 秒算 |
@@ -85,16 +84,24 @@ graph LR
 
 验收：`mvn -o compile` 通过；写一个临时 `!main` 逐条调用新 API 并打印，全部有正确输出。
 
+> **进度（2026-11-03）**：M1-1～M1-5 代码已完成并 push（commit `28a7e3a`）；编译通过，原示例产线回归跑通。
+> **剩余专项测试**（一个临时测试 plan 一次跑完，通过后全部标 ✅）：
+> 1. PackagingPoint：`deliver` 后 `status` 回 `cleared`，可再次 `setOrder`
+> 2. Metrics：`orderStarted` → `orderFulfilled` 打印每单耗时 / 累计值；重复 fulfilled 抛异常
+> 3. Robot：多次 `charge` 后 energy 不超过 `maxEnergy`
+> 4. AccessPoint：有货时再 `retrieve` 被拒绝，且库存未被扣
+> 5. Workstation：IDLE 且空闲时可重新 `configure`；持有输入件时被拒绝
+
 ---
 
 ### M2 — 动态场景构建（替掉全部硬编码）
 
 | # | 做什么 |
 |---|---|
-| M2-1 | 把 `!setup()` 的建场景动作抽成「**列表驱动**」：`[["ap","ap1"],["ap","ap2"],...]` 逐条循环创建 |
-| M2-2 | `!main` 里用 `?locations` 拿到全部 zone，按类型归类成 `accessPoints / workstations / storagePoints / packagingPoints / chargers` 信念 |
-| M2-3 | 机器人 agent 数量也从列表生成（`S.createAgent` 循环），数量 ≥2 |
-| M2-4 | 删除所有 `ap1`、`ws1`、`pp1`、`r1` 字面量 |
+| M2-1 ✅ | 场景改为**初始信念驱动**：`Main.astra` 顶部 `initial zone/robotSpec/stock/recipe/initialOrder`，`!setup` 用 `foreach` 遍历 + `+!createZone("ap"/"sp"/"pp"/"ws", name)` 按类型分派；回归跑通 |
+| M2-2 ✅ | `Base.astra` 新增 `!discoverZones`：对 5 个角色调用 `zonesOfType`，存为 `zoneOf(角色, 名字)` 信念；`!main` 调用；实测 5 类 zone 共 7 个全部发现 |
+| M2-3 ✅ | `foreach (robotSpec(name)) S.createAgent(name, "Robot")`；Robot.astra 用 `S.name()` 找回自身工件，无需改动；r1、r2 agent 均启动 |
+| M2-4 ✅ | 示例流程改用 `?zoneOf(...)` / `?robot(...)` 取名，`while (state ~= "ready")` 按 `inputsNeeded` 取料；字面量只剩场景数据 `initial`；实测选中 ap2 仍跑通 |
 
 验收：**验收项 1** —— zone 与 robot 各翻倍，不改逻辑仍跑通。
 
@@ -152,8 +159,8 @@ graph LR
 
 | 阶段 | 类型 | 语言 / 文件 | 要做什么 | 状态 |
 |---|---|---|---|---|
-| **M1** 补工件缺口 | coding | **Java**（CArtAgO artifact） | `Floorplan.zonesOfType`、`PackagingPoint.deliver` 结单换单、新建 `Metrics.java`、修 3 个 bug、`configure` 可重复（M1-5） | ⬜ **下一步** |
-| **M2** 动态场景 | coding | **ASTRA** | 去掉 35 处硬编码 `ap1` / `r1`，改成列表循环创建 | ⬜ |
+| **M1** 补工件缺口 | coding | **Java**（CArtAgO artifact） | `Floorplan.zonesOfType`、`PackagingPoint.deliver` 结单换单、新建 `Metrics.java`、修 3 个 bug、`configure` 可重复（M1-5） | 🟡 代码已完成并 push（`28a7e3a`）；**下一步：专项测试**（见 M1 节） |
+| **M2** 动态场景 | coding | **ASTRA** | 去掉 35 处硬编码 `ap1` / `r1`，改成列表循环创建 | ✅ 完成（M2-1～M2-4）；**下一步：M1 专项测试 / M3 订单闭环** |
 | **M3** 订单闭环 | coding | ASTRA | LoadOrder → DeliverOrder → 换单 | ⬜ |
 | **M4** 任务编排 + 并发 | coding（**工作量最大**） | ASTRA：新建 `Manager.astra` / `Broker.astra` | 依赖 DAG、CNP 投标、`failure` 重派 | ⬜ |
 | **M5** 策略打磨 | coding（可砍） | ASTRA | 阈值充电、storage 暂存 | ⬜ |
