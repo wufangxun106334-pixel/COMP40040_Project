@@ -1,24 +1,6 @@
-// ============================================================================
-// Base.astra —— 公共能力层（抽象基类 agent）
-//
-// 定位：它本身【不会被实例化】，只作为 Main 与 Robot 的父 agent（extends Base）。
-//       作用是把"如何创建/操作各种工厂工件"的计划库集中写一处，避免重复。
-//
-// 整体设计模式（贯穿全文）：
-//   1) 每个 !xxx 计划 = "获取工件句柄"（幂等：先 lookup，失败才 make）
-//   2) 拿到句柄后把「名字 → ArtifactId」以信念形式存下（这就是 types main 里的公式）
-//   3) 后续所有操作都靠 ?xxx 查询计划读取工件的观察属性（observable property）
-//
-// 三类"计划前缀"的读法：
-//   +!name  外部调用（子目标）      +?name  查询（无副作用，返回绑定值）
-//   @message(...)  消息处理器
-// ============================================================================
+// 公共计划库：创建工件、查询属性、机器人基本动作，供 Main / Robot 继承
 agent Base {
-    // ------------------------------------------------------------------------
-    // types main —— 信念（belief）公式声明
-    // 用来记录"逻辑名字 → CArtAgO 工件句柄"的映射，供后续计划做前置条件判断。
-    // 例如 accessPoint("ap1", <id>) 表示"叫 ap1 的取料点是这个工件"。
-    // ------------------------------------------------------------------------
+    // 信念：各工件句柄与机器人位置
     types main {
         formula floorplan(cartago.ArtifactId);      // 场地总表（全场景唯一）
 
@@ -34,49 +16,37 @@ agent Base {
         formula workstation(string, cartago.ArtifactId);  // 工作站
 
         formula packagingPoint(string, cartago.ArtifactId); // 包装点
-        formula zoneOf(string, string);                   // zoneOf(角色, zone 名)：由 !discoverZones 从 Floorplan 发现（M2-2）
+        formula zoneOf(string, string);                   // zoneOf(角色, zone 名)
+        formula metrics(cartago.ArtifactId);
+        formula stock(string, int);                       // stock(物料, 库存)，场景数据在 Main
+        formula recipe(string, list, string, long);       // recipe(工作站, 输入, 产出, 耗时)，场景数据在 Main
     }
 
-    // ------------------------------------------------------------------------
-    // 推理规则（inference）：不靠收消息，而是从已有信念"推出"新信念。
-    // 只要 (a) 我知道有个叫 name 的机器人工件，(b) 我正关注着它，
-    // 且 (c) 该工件的 at 属性值 = location，
-    // 就自动得出信念 at(name, location)。
-    // 这就是 Robot agent 里必须 cartago.focus(rid) 的原因：不聚焦就看不到它的属性。
-    // ------------------------------------------------------------------------
+    // 生产规划：展开结果与中间品位置
+    types planning {
+        formula seq(int);                       // 展开序号计数器
+        formula buildStep(int, string, string); // buildStep(序号, 工作站, 产物)，序号即生产顺序
+        formula storedAt(string, string);       // storedAt(中间品, 存储点)
+    }
+
+    initial seq(0);
+
+    // 由机器人工件的 at 属性推导 at(名字, 位置)
     inference at(string name, string location) :- 
             robot(name, cartago.ArtifactId rid) & cartago.at(location);
 
-    // ------------------------------------------------------------------------
-    // types comms —— 通信词汇表（仅在 agent 之间传递的消息内容里用）
-    //   transfer(from, to)     请求：把货物从 from 搬到 to
-    //   transferred(from, to)  回复：搬运已完成
-    // ------------------------------------------------------------------------
+    // 消息内容：搬运请求与回执
     types comms {
         formula transfer(string, string);
         formula transferred(string, string);
     }
 
-    // ------------------------------------------------------------------------
-    // 模块加载（相当于 import）
-    //   cartago : CArtAgO 平台 API（startService / makeArtifact / operation / ...）
-    //   S       : System 模块（createAgent / sleep / fail / name）
-    //   pe      : 自定义模块 PropertyExtractor，把观察属性转成 ASTRA 值
-    //   P       : Prelude 模块（列表操作，如 headAsString）
-    // ------------------------------------------------------------------------
     module Cartago cartago;
     module System S;
     module modules.PropertyExtractor pe;
     module Prelude P;
 
-    //******************************************************************************************
-    // FLOORPLAN —— 场地总表
-    // 所有 zone（取料点/存储点/包装点/工作站/充电点）都会 install 到它身上，
-    // 因此 Floorplan 是"谁占了哪个 zone"的唯一权威。
-    //******************************************************************************************
-
-    // 获取 Floorplan 句柄。幂等写法：先尝试按名字查找（比如别的 agent 已建好），
-    // 查不到才真正创建，最后统一把句柄记进信念 floorplan(aid)。
+    // 查找或创建 Floorplan
     plan +!floorplan(cartago.ArtifactId aid) {
         try {
             cartago.lookupArtifact("floorplan", aid);
@@ -86,32 +56,21 @@ agent Base {
         +floorplan(aid);
     }
 
-    // 查询：当前场地上所有 zone 的名字列表。
-    // 读的是 Floorplan 的观察属性 locations（一个集合），
-    // 用 pe.listValues 转成 ASTRA 列表后绑定给 locations 变量。
-    // ★ 这是"动态获知场地有哪些区域"的入口，是摆脱硬编码的关键。
+    // 所有 zone 名
     plan +?locations(list locations) :
             floorplan(cartago.ArtifactId fpId) {
         cartago.operation(fpId, observeProperty("locations", cartago.ArtifactObsProperty prop));
         locations = pe.listValues(prop);
     }
 
-    // 查询：检查某个 zone 是否空闲（没有机器人占用）。
-    // 调用 Floorplan 的 isOccupied 操作拿回布尔值，被占则本计划失败(S.fail)，
-    // 于是调用方（+!at）会整体失败而不会真的撞车。
+    // zone 空闲则成功，被占则失败
     plan +?free(string location) :
             floorplan(cartago.ArtifactId fpId) {
         cartago.operation(fpId, isOccupied(location, boolean occupied));
         if (occupied) S.fail();
     }
 
-    //******************************************************************************************
-    // WAREHOUSE —— 仓库（库存源）
-    // 注意：Warehouse 不 install 进 Floorplan，所以它不是一个 zone，
-    //       机器人无法进入仓库；取货只能通过 Access Point 间接完成。
-    //******************************************************************************************
-
-    // 获取仓库句柄（同样是 lookup-or-create 的幂等写法）。
+    // 查找或创建仓库
     plan +!warehouse(cartago.ArtifactId aid) {
         try {
             cartago.lookupArtifact("warehouse", aid);
@@ -121,20 +80,12 @@ agent Base {
         +warehouse(aid);
     }
 
-    // 向仓库进货：给某种物料增加 quantity 件。
-    // 前置条件（guard）是已持有仓库句柄。仓库内部按物料类型各维护一个计数属性。
+    // 增加库存
     plan +!addToWarehouse(string item, int quantity) : warehouse(cartago.ArtifactId aid) {
         cartago.operation(aid, add(item, quantity));
     }
 
-    //******************************************************************************************
-    // ACCESS POINT —— 取料点：把原料从仓库"取出"到场地上的中转位
-    //******************************************************************************************
-
-    // 创建取料点（前置：仓库与 Floorplan 都已存在）。
-    // 需要建立两条链接：
-    //   out-fp → Floorplan：让本区域登记进场地并参与占用管理
-    //   out-1  → Warehouse：取料时通过这条链接向仓库要货
+    // 创建取料点，连接仓库与 Floorplan
     plan +!accessPoint(string name, cartago.ArtifactId aid) : 
             warehouse(cartago.ArtifactId warehouseId) &
             floorplan(cartago.ArtifactId fpId) {
@@ -143,28 +94,22 @@ agent Base {
         } recover {
             cartago.makeArtifact(name, "artifacts.AccessPoint", cartago.params([]), aid);
 
-            // Install AP In Floorplan
             cartago.linkArtifacts(aid, "out-fp", fpId);
             cartago.operation(aid, install());
 
-            // Connect AP to Warehouse
             cartago.linkArtifacts(aid, "out-1", warehouseId);
         }
         +accessPoint(name, aid);
     }
 
-    // 取料：让取料点从仓库取出 type 类型的物料（一次一件，取出后不可退回）。
-    // 取出后立刻用 ?available 复核，确保操作真的生效。
+    // 取料点从仓库取出一件指定物料
     plan +!available(string name, string type) :
             accessPoint(name, cartago.ArtifactId aid) {
         cartago.operation(aid, retrieve(type));
         ?available(name, type);
     }
 
-    // 查询取料点当前放的是什么（读观察属性 available）。
-    // 两种用法：
-    //   ?available("ap1", string T)    T 未绑定 → 把实际值绑给 T 并打印（读）
-    //   ?available("ap1", "apples")    T 已绑定 → 与实际值比较，不符则失败（校验）
+    // 取料点上当前的物料
     plan +?available(string name, string type) :
             accessPoint(name, cartago.ArtifactId aid) {
         cartago.operation(aid, observeProperty("available", cartago.ArtifactObsProperty prop));
@@ -175,13 +120,7 @@ agent Base {
             S.fail();
     }
 
-    //******************************************************************************************
-    // STORAGE POINT —— 存储点：容量 1 件的临时缓冲
-    // 只实现"创建 + 查询"；把货放进去 / 取出来分别是工件的 give / take 操作，
-    // 由 Robot 工件的 load()/unload() 间接触发（StoragePoint 在合法装卸白名单里）。
-    //******************************************************************************************
-
-    // 创建存储点，并把它 install 到 Floorplan（使其成为一个 zone）。
+    // 创建存储点
     plan +!storagePoint(string name, cartago.ArtifactId aid) : 
             floorplan(cartago.ArtifactId fpId) {
         try {
@@ -189,14 +128,13 @@ agent Base {
         } recover {
             cartago.makeArtifact(name, "artifacts.StoragePoint", cartago.params([]), aid);
 
-            // Install AP In Floorplan
             cartago.linkArtifacts(aid, "out-fp", fpId);
             cartago.operation(aid, install());
         }
         +storagePoint(name, aid);
     }
 
-    // 查询存储点里现在放着什么（与取料点的同名计划语义一致：未绑定=读，已绑定=校验）。
+    // 存储点上当前的物料
     plan +?available(string name, string type) :
             storagePoint(name, cartago.ArtifactId aid) {
         cartago.operation(aid, observeProperty("available", cartago.ArtifactObsProperty prop));
@@ -207,11 +145,7 @@ agent Base {
             S.fail();
     }
 
-    //******************************************************************************************
-    // PACKAGING POINT —— 包装点：收集订单所需零件并交付发货
-    //******************************************************************************************
-
-    // 创建包装点并 install 到 Floorplan（使它成为一个 zone）。
+    // 创建包装点
     plan +!packagingPoint(string name, cartago.ArtifactId aid) : 
             floorplan(cartago.ArtifactId fpId) {
         try {
@@ -219,7 +153,6 @@ agent Base {
         } recover {
             cartago.makeArtifact(name, "artifacts.PackagingPoint", cartago.params([]), aid);
 
-            // Install PP In Floorplan
             cartago.linkArtifacts(aid, "out-fp", fpId);
             cartago.operation(aid, install());
         }
@@ -227,29 +160,16 @@ agent Base {
         +packagingPoint(name, aid);
     }
 
-    // 给包装点装入一张订单（order 是所需零件的类型列表）。
-    // ⚠️ 工件内部用 defineObsProperty 定义 order/outstanding，
-    //    同名属性重复定义会报错 → 本计划对一个包装点【只能调用一次】。
+    // 向包装点装入订单
     plan +!order(string name, list order) :
             packagingPoint(name, cartago.ArtifactId aid) {
         cartago.operation(aid, setOrder(order));
     }
 
-    //******************************************************************************************
-    // ROBOT —— 机器人"工件"（能力层）
-    // 注意：这里创建的是 CArtAgO 工件，不是 agent。
-    //       真正会执行搬运动作的是 Robot.astra 里的 agent（由 S.createAgent 创建）。
-    //******************************************************************************************
-
-    // 创建机器人：先建配套充电点，再由充电点创建机器人本体。
-    // 顺序很关键 —— RobotChargePoint.install(name) 内部会
-    //   makeArtifact(name, "artifacts.Robot", [充电点名, maxEnergy])
-    // 因此机器人的初始位置(home)就是它的充电点。
-    // maxEnergy 硬编码为 800（cartago.params([800])）。
+    // 查找或创建机器人工件及其充电点
     plan +!robot(string name, cartago.ArtifactId rid) :
             floorplan(cartago.ArtifactId fpId) {
         try {
-            // 已存在（例如第二个 agent 也来获取句柄）：只补记信念
             cartago.lookupArtifact(name, rid);
             cartago.lookupArtifact(name+"-charger", cartago.ArtifactId rcId);
             +chargePoint(name+"-charger", rcId);
@@ -257,9 +177,7 @@ agent Base {
             cartago.makeArtifact(name+"-charger", "artifacts.RobotChargePoint", cartago.params([800]), cartago.ArtifactId rcId);
             +chargePoint(name+"-charger", rcId);
 
-            // Install AP In Floorplan
             cartago.linkArtifacts(rcId, "out-fp", fpId);
-            // 该操作内部会创建名为 name 的 Robot 工件，并把充电点登记为它的位置
             cartago.operation(rcId, install(name));
 
             cartago.lookupArtifact(name, rid);
@@ -270,8 +188,7 @@ agent Base {
         +robot(name, rid);
     }
 
-    // 查询机器人在哪个 zone（读 Robot 工件的 at 观察属性）。
-    // 语义同前面：未绑定=读并打印，已绑定=比较校验。
+    // 机器人当前位置
     plan +?at(string name, string location) :
             robot(name, cartago.ArtifactId rid) {
         cartago.operation(rid, observeProperty("at", cartago.ArtifactObsProperty prop));
@@ -282,21 +199,31 @@ agent Base {
             S.fail();
     }
 
-    // 移动指令的"空操作"分支：如果机器人已经在目标位置，就什么都不做（省时省电）。
-    // 这条计划因 guard 更具体而优先于下面那条。
+    // 机器人当前电量
+    plan +?energy(string name, int energy) :
+            robot(name, cartago.ArtifactId rid) {
+        cartago.operation(rid, observeProperty("energy", cartago.ArtifactObsProperty prop));
+        energy = pe.intValue(prop);
+    }
+
+    // 机器人电量上限
+    plan +?maxEnergy(string name, int maxEnergy) :
+            robot(name, cartago.ArtifactId rid) {
+        cartago.operation(rid, observeProperty("maxEnergy", cartago.ArtifactObsProperty prop));
+        maxEnergy = pe.intValue(prop);
+    }
+
+    // 已在目标位置，无需移动
     plan +!at(string name, string location) : at(name, location) { }
 
-    // 移动指令的"真正移动"分支：先确认目标 zone 空闲（?free，被占则失败），
-    // 再调用 Robot 工件的 move 操作（内部耗时 2 秒并扣能量）。
+    // 目标空闲则移动过去
     plan +!at(string name, string location) :
             robot(name, cartago.ArtifactId rid) {
         ?free(location);
         cartago.operation(rid, move(location));
     }
 
-    // 装载：让机器人从"当前所在工件"拿起一件货。
-    // 具体从哪个工件拿，由 Robot 工件内部根据 at 位置自行解析（取料点/存储点/工作站）。
-    // load 完成后读取 holding 属性，把货物类型打印出来。
+    // 从当前位置装载一件货
     plan +!holding(string name, string item) : 
             robot(name, cartago.ArtifactId rid) {
         cartago.operation(rid, load());
@@ -304,63 +231,47 @@ agent Base {
         cartago.println(name + " is holding " + item);
     }
 
-    // 查询机器人手上拿着什么（读 holding 属性；空手时为字符串 "none"）。
+    // 机器人手上的货
     plan +?holding(string name, string item) :
             robot(name, cartago.ArtifactId rid) {
         cartago.operation(rid, observeProperty("holding", cartago.ArtifactObsProperty prop));
         item = pe.stringValue(prop);
     }
 
-    // 卸载：把货物交给"当前所在工件"（包装点/存储点/工作站）。
-    // 先读出货物类型以便打印日志，再执行 unload（同样耗时并扣能量）。
+    // 把货卸给当前位置
     plan +!empty(string name) : 
             robot(name, cartago.ArtifactId rid) {
-        
         ?holding(name, string item);
 
         cartago.operation(rid, unload());
         cartago.println(name + " is no longer holding " + item);
     }
 
-    //******************************************************************************************
-    // WORKSTATION —— 工作站：按配方把多个输入零件加工成一个输出零件
-    // 生命周期：idle → ready（输入凑齐）→ active（生产）→ done（产出）→ idle（被取走）
-    //******************************************************************************************
-
-    // 创建工作站并 install 到 Floorplan。
-    // 注意这里【没有】try/recover：工作站不做幂等保护，重复建会抛异常。
+    // 创建工作站
     plan +!workstation(string name, cartago.ArtifactId aid) :
             floorplan(cartago.ArtifactId fpId) {
         cartago.makeArtifact(name, "artifacts.Workstation", cartago.params([]), aid);
 
-        // Install AP In Floorplan
         cartago.linkArtifacts(aid, "out-fp", fpId);
         cartago.operation(aid, install());    
         +workstation(name, aid);
     }
 
-    // 配置配方：inputs=所需输入零件类型列表，output=产出类型，duration=生产耗时(毫秒)。
-    // ⚠️ duration 声明为 long，调用时必须写 2000l 这样的字面量。
-    // ⚠️ 工件内部用 defineObsProperty 定义 inputs/output/duration，同名重复配置会报错。
+    // 配置工作站：输入、产出、耗时
     plan +!configure(string name, list inputs, string output, long duration) :
             workstation(name, cartago.ArtifactId wid) {
-        
-        // DO ACTUAL CONFIGURATION HERE...
         cartago.operation(wid, configure(inputs, output, duration));
         cartago.println(name + " is configured (inputs: " + inputs + "; output: " + output + ")" );
     }
 
-    // 查询工作站还缺哪些输入零件（读 inputsNeeded 属性，一个字符串列表）。
-    // 每收到一件匹配的输入，工件内部会把它从该列表移除；空了就意味着 ready。
-    // ★ 这是"按需取料"的依据，替代手工写死下一步取什么。
+    // 工作站还缺的输入
     plan +?inputsNeeded(string name, list inputs) :
             workstation(name, cartago.ArtifactId wid) {
         cartago.operation(wid, observeProperty("inputsNeeded", cartago.ArtifactObsProperty prop));
         inputs = pe.listValues(prop);
     }
 
-    // 查询工作站状态（读 state 属性：idle / ready / active / done）。
-    // 语义同前：未绑定=读，已绑定=比较校验（失败则 S.fail）。
+    // 工作站状态；传入值时做比较
     plan +?state(string name, string state) :
             workstation(name, cartago.ArtifactId wid) {
         cartago.operation(wid, observeProperty("state", cartago.ArtifactObsProperty prop));
@@ -370,33 +281,24 @@ agent Base {
             S.fail();
     }
 
-    // 启动生产。整段是"同步等待"写法：
-    //   1) 先确认处在 ready 状态（否则直接失败，不冒险开工）
-    //   2) 调用 operate()，工件内部 active → sleep(duration) → done
-    //   3) 由于 operate() 返回时工件其实还在生产，必须轮询 ?state 直到读到 "done"
+    // 运行工作站并等待生产完成
     plan +!operate(string name) :
             workstation(name, cartago.ArtifactId ws1Id) {
-        // Check workstation is in correct state...
         ?state(name, "ready");
 
-        // Operate
         cartago.operation(ws1Id, operate());
 
-        // Wait for operation to complete
-        //?state("ws1", string state);
         ?state(name, string state);
         while (state ~= "done") {
             S.sleep(500);
-            //?state("ws1", string state2);
             ?state(name, string state2);
             state = state2;
         }
 
-        //cartago.println("ws1 is: " + state);
         cartago.println(name + " is: " + state);
     }
 
-    // M2-2：从 Floorplan 动态发现 zone，按角色存成 belief
+    // 按角色发现所有 zone，存为 zoneOf(角色, 名字)
     plan +!discoverZones() : floorplan(cartago.ArtifactId fpId) {
         forall (string role : ["AccessPoint", "StoragePoint", "PackagingPoint", "Workstation", "RobotChargePoint"]) {
             cartago.operation(fpId, zonesOfType(role, list names));
@@ -407,4 +309,122 @@ agent Base {
         }
     }
 
+    // 查找或创建 Metrics 工件
+    plan +!metrics(cartago.ArtifactId aid) {
+        try {
+            cartago.lookupArtifact("metrics", aid);
+        } recover {
+            cartago.makeArtifact("metrics", "artifacts.Metrics", cartago.params([]), aid);
+        }
+        +metrics(aid);
+    }
+
+    // 包装点订单状态；传入值时做比较
+    plan +?orderStatus(string pp, string status) : packagingPoint(pp, cartago.ArtifactId aid) {
+        cartago.operation(aid, observeProperty("status", cartago.ArtifactObsProperty prop));
+        if (~pe.isBound(status))
+            status = pe.stringValue(prop);
+        else if (status ~= pe.stringValue(prop))
+            S.fail();
+    }
+
+    // 交付已凑齐的订单
+    plan +!deliver(string pp) : packagingPoint(pp, cartago.ArtifactId aid) {
+        cartago.operation(aid, deliver());
+    }
+
+    // 生产一个订单零件：展开依赖后按序号逐步生产，最后一步的产物送到包装点
+    plan +!produceItem(string pp, string item) : recipe(string w, list ins, item, long d) {
+        !clearPlan();
+        !expand(item);
+        ?seq(int last);
+        int k = 1;
+        while (k <= last) {
+            !runStep(pp, k, last);
+            k = k + 1;
+        }
+    }
+
+    // 订单零件本身就是原料：直接从取料点送到包装点
+    plan +!produceItem(string pp, string item) : zoneOf("AccessPoint", string ap) & robot(string r, cartago.ArtifactId rid) {
+        !available(ap, item);
+        !transfer(r, ap, pp);
+    }
+
+    // 执行一个生产步骤：补齐输入 → 运行 → 产物送包装点（最后一步）或存入存储点
+    plan +!runStep(string pp, int k, int last) : buildStep(k, string ws, string item) & zoneOf("AccessPoint", string ap) & robot(string r, cartago.ArtifactId rid) {
+        cartago.println("[PP] step " + k + "/" + last + ": " + ws + " -> " + item + " (robot=" + r + ")");
+        ?state(ws, string state);
+        while (state ~= "ready") {
+            ?inputsNeeded(ws, list needed);
+            !supply(P.headAsString(needed), ws, ap, r);
+            ?state(ws, string state2);
+            state = state2;
+        }
+        !operate(ws);
+        if (k == last) {
+            !transfer(r, ws, pp);
+        } else {
+            !storeItem(ws, item, r);
+        }
+    }
+
+    // 原料步骤无需执行
+    plan +!runStep(string pp, int k, int last) { }
+
+    // 供料：中间品从存储点取，原料从取料点取
+    plan +!supply(string item, string ws, string ap, string r) : storedAt(item, string sp) {
+        -storedAt(item, sp);
+        !transfer(r, sp, ws);
+    }
+
+    plan +!supply(string item, string ws, string ap, string r) {
+        !available(ap, item);
+        !transfer(r, ap, ws);
+    }
+
+    // 中间品存入一个空闲存储点
+    plan +!storeItem(string ws, string item, string r) : zoneOf("StoragePoint", string sp) & ~storedAt(string other, sp) {
+        !transfer(r, ws, sp);
+        +storedAt(item, sp);
+    }
+
+    plan +!storeItem(string ws, string item, string r) {
+        cartago.println("[PP] no free storage point for " + item);
+        S.fail();
+    }
+
+    // 递归展开（后序）：先展开输入，再登记本产物，序号即生产顺序
+    plan +!expand(string item) : recipe(string ws, list inputs, item, long d) {
+        forall (string in : inputs) {
+            !expand(in);
+        }
+        ?nextSeq(int n);
+        +buildStep(n, ws, item);
+    }
+
+    // 仓库有的物料：原料，生产时从取料点取，无需登记
+    plan +!expand(string item) : stock(item, int q) { }
+
+    // 既无配方也无库存：拒收
+    plan +!expand(string item) {
+        cartago.println("[PP] cannot make: " + item);
+        S.fail();
+    }
+
+    // 取下一个序号
+    plan +?nextSeq(int n) : seq(int c) {
+        -seq(c);
+        +seq(c + 1);
+        n = c + 1;
+    }
+
+    // 清空上一次的展开结果
+    plan +!clearPlan() : seq(int c) {
+        foreach (buildStep(int n, string w, string it)) {
+            -buildStep(n, w, it);
+        }
+        -seq(c);
+        +seq(0);
+    }
 }

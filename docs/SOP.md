@@ -1,5 +1,7 @@
 # SOP — Manufacturing Mayhem（最小可交路线）
 
+> **2026-11-11 范围收缩**：只保留 `COMP40040_Project.docx` 明确要求的内容；已撤回 Broker/CNP、任务 DAG、库存预检拒收、Workstation 重新配置、价目表；第一版原始代码全部保留。
+
 > 目标档位：**最小可交**（能验收、能讲清设计↔实现对应，不追求性能）
 > 配套笔记：[overview.md](overview.md)（起点代码逐项核对）
 > 起点代码：`manufacturing-mayhem/`（已加中文注释）
@@ -11,7 +13,6 @@
 | # | 验收项 | 怎么证明 |
 |---|---|---|
 | 1 | **不假设数量**：zone / robot 数量变化，逻辑不变 | 把 `!setup` 里的 zone 与 robot 各翻倍，不加一行逻辑仍能跑通 |
-| 2 | **≥2 机器人并发搬运** | 日志里出现两条 transfer 在时间上重叠 |
 | 3 | **多层依赖**：WS-A 的产出能作为 WS-B 的输入 | 跑一条 A→B 的两级产线并成功交付 |
 | 4 | **订单闭环**：FULFILLED → `deliver` → CLEARED → 自动换新订单 | 连续完成 2 张订单 |
 | 5 | **目标函数可读**：每单完成时间 + 总价值 | `Metrics` 工件能打印出 每单耗时 / 总完成时间 / 总价值 |
@@ -47,7 +48,7 @@
 | Access Point **取料后不可退回** | 取料时机必须想清楚，否则货卡在 ap 上 |
 | 订单装入后**不可中途修改**，必须**显式 `deliver`** | 忘记 deliver → 订单永远不结清 |
 | **不假设 agent / zone 数量** | 禁止出现 `ap1`、`r1` 这类硬编码 |
-| `Workstation` 创建**无幂等保护**，重复建会抛异常；`configure` 仅 IDLE 且无在制件 / 待取产出时可重新配置（M1-5） | 场景构建要判重；换产品前须等工作站清空 |
+| `Workstation` 创建**无幂等保护**，重复建会抛异常；`configure` 用 `defineObsProperty`，**只能配置一次**（原始代码，未改） | 场景构建要判重；每个工作站只生产一种产品 |
 | `duration` 参数是 `long`，必须写 `2000l` | 语法错 |
 | `Warehouse` **不是 zone**，机器人进不去 | 取货只能经 Access Point |
 | 一次移动实际耗时 **≈4 秒**（两层 `sleep 2000`） | 调度估算时别按 2 秒算 |
@@ -62,9 +63,8 @@
 graph LR
     M1[M1 补工件缺口<br/>Java] --> M2[M2 动态场景构建]
     M2 --> M3[M3 订单闭环]
-    M3 --> M4[M4 任务编排 + 并发]
-    M4 --> M5[M5 策略打磨]
-    M5 --> M6[M6 报告 + 视频]
+    M3 --> M4[M4 失败回执]
+    M4 --> M6[M6 报告 + 视频]
     M3 -.-> M6
 ```
 
@@ -78,9 +78,9 @@ graph LR
 |---|---|---|---|
 | M1-1 ✅ | 让 agent 能**按角色查 zone** | `Floorplan.java` | 已实现 `zonesOfType(String type, OpFeedbackParam<List<String>>)`；ASTRA 端 `cartago.operation(fpId, zonesOfType("AccessPoint", list aps))` 实测返回 `["ap2","ap1"]` → **Java `List<String>` 可直接回传为 ASTRA `list`**，无需 `pe.listValues`（结果顺序不固定） |
 | M1-2 🟡 | 订单能**结清 + 换单** | `PackagingPoint.java` | 补状态属性（`loaded`/`fulfilled`/`cleared`）；`deliver()` 真正重置 `order`/`outstanding`；允许再次 `setOrder`（已实现，编译通过，待运行测试） |
-| M1-3 🟡 | 能**计时计价** | 新建 `artifacts/Metrics.java` | 已实现（编译通过，待运行测试）：`orderStarted(id)` / `orderFulfilled(id, value)`，时间由工件自取；观察属性 `totalTime`、`totalValue`、`ordersDone`；重复计数抛异常 |
+| M1-3 ✅ | 能**计时计价** | 新建 `artifacts/Metrics.java` | `orderStarted(id)` / `orderFulfilled(id, value)`，时间由工件自取；观察属性 `totalTime`、`totalValue`、`ordersDone`。**验收通过**：两单累计正确（516+302=818ms，10+5=15）；重复完成 / 未知订单 / 重复开始 / 负价值均被拒绝 |
 | M1-4 🟡 | 修 3 个 bug | `Robot.java`、`AccessPoint.java` | `load`/`unload` 判电量误用 `MOVE_COST` → 改 `LOAD_COST`；`charge()` 加 `maxEnergy` 封顶；`retrieve` 在已持货时拒绝（已修，示例产线回归通过；异常分支待测） |
-| M1-5 🟡 | 工作站能**重复配置** | `Workstation.java` | `init()` 预定义 `inputs`/`output`/`inputsNeeded`/`duration`；`configure` 改用 `updateObsProperty`，仅允许在 IDLE 时调用（支撑 §9.3 ConfigureWorkstation）（已实现，示例产线回归通过；重新配置待测） |
+| ~~M1-5~~ ✂️ | ~~工作站能重复配置~~ | `Workstation.java` | **已撤回**：docx 未要求，`Workstation.java` 恢复为原始代码 |
 
 验收：`mvn -o compile` 通过；写一个临时 `!main` 逐条调用新 API 并打印，全部有正确输出。
 
@@ -112,36 +112,44 @@ graph LR
 | # | 做什么 |
 |---|---|
 | M3-1 | 订单生命周期计划：装载 → 逐个零件确认到达 → `deliver` → 调 `Metrics` 记时间/价值 → 装下一张 |
-| M3-2 | 订单所需零件 → 展开成「原料清单 + 需生产的中间品清单」 |
-| M3-3 | 价值来源定下来（订单里的零件数？固定值？写进场景配置） |
+| M3-2 🟡 | 订单所需零件 → 展开成需生产的中间品清单。**已实现于 `Base.astra`**：`!expand` 后序展开 → `buildStep(序号, ws, 产物)`（序号即生产顺序，原料不登记），`!produceItem` 按序号逐步 `!runStep`，中间品存 SP（`storedAt`），最终品直送 pp。冒烟通过：o1/o2；o3 两层产线端到端待确认 |
+| M3-3 ✅ | 价值来源：**订单自带价值** `orderSpec(编号, 零件, 价值)`（Main 场景数据）。作业只要求 "Orders will have a value"，未规定来源；价目表方案已撤回。冒烟通过：o1 `value=10` |
 
 验收：**验收项 4 + 5** —— 连续完成 2 张订单，`Metrics` 打印出每单耗时与累计价值。
 
+#### M3-2 执行步骤与修改文件
+
+> 目标：订单零件递归展开为「原料 + 按依赖排序的生产步骤」，`!produce` 按步骤执行 → 跑通**验收项 3**（两层产线）。对应设计 §9.3 **ExpandDependencies**。Java 无需改动。
+
+| 步骤 | 修改文件 | 位置 / 改动 |
+|---|---|---|
+| **1** 场景加两层产品 | `Main.astra` | 顶部 `initial`：`zone("ws","ws2")`、`stock("box",5)`、`apples` 改 4、`recipe("ws2", ["apple-pie","box"], "boxed-pie", 2000l)`、`orderSpec("o3", ["boxed-pie"], 30)` |
+| **2** 递归展开 | `Base.astra`（`recipe`/`stock` 类型声明一并移入 Base，否则父类看不到子类声明） | `types main` 声明 `rawNeed(int,string)`、`buildStep(int,string,string)`、`seq(int)`；新增 3 条 `+!expand`（有配方→先展开输入再登记 / 有库存→原料 / 都没有→`S.fail()` 拒收）和 `+!nextSeq` |
+| ~~**3** 库存检查~~ | — | **已撤回**（docx 未要求） |
+| **4** 按步骤生产 | `Main.astra` | 重写 `+!produce(pp, items)`：按 `buildStep` 序号执行；输入为原料→AP 取，为中间品→从 SP 取；最终品直接送 pp，中间品存 SP |
+| | `Base.astra` | `types main` 加 `storedAt(string,string)`；按需加「找空 SP」plan |
+| **5** 多零件订单 | `Main.astra` | `+!produce` 外层 `forall (string item : items)` |
+| **6** 验收 | — | `mvn`：o1、o2 单层回归 + o3 两层，日志出现 `Delivered: [boxed-pie]` |
+| **7** 同步设计 | `docs/M0-GAIA-分析模型.md` | §5 PP 行计划名改为 `!expand` / `!produceItem` / `buildStep` |
+| | `docs/SOP.md` | M3-2 行 + §4 进度表 |
+
+**要点**
+- `!expand` 是**后序遍历**：先展开输入再登记产物，`buildStep` 序号即生产顺序。
+- belief 必须带序号：取出顺序不保证；且相同 belief 只存一份，不带序号会丢掉重复原料（如 2 个 apples）。
+- 最终品直接 ws → pp（不经 SP 中转），SP 只暂存中间品。
+- ⚠️ 冲突风险：步骤 1、4、5 都改 `Main.astra`，多个 agent 并行时先确定由谁改。
+
 ---
 
-### M4 — 任务编排 + 并发（工作量最大，约占一半）
+### M4 — 失败回执（防死锁）
+
+> docx 不要求并发 / CNP / 策略优化（性能 "mainly for fun"）。原 M4-1（任务 DAG）、M4-2（Broker + CNP）已实现后**撤回**；M4-3、M4-5、M4-6、整个 M5 删除。只保留防止系统永久卡死的失败回执。
 
 | # | 做什么 |
 |---|---|
-| M4-1 | **依赖展开**：递归解析 `inputsNeeded`，得到「先做什么、再做什么」的任务 DAG |
-| M4-2 | **任务队列 + 机器人池**：可执行任务入队，空闲机器人认领 |
-| M4-3 | **改串行 `transfer` 为异步**：`send` 后立即返回，用 `transferred` / `failed` 消息回调，而不是 `wait` 阻塞 |
-| M4-4 | **失败与超时**：新增 `@message(failure, ...)` 处理器 + 超时重派任务（当前任何异常都会让 Main 永久卡死） |
-| M4-5 | **zone 冲突处理**：拿不到 zone 就等 / 换序，而不是抛异常失败 |
-| M4-6 | **Workstation 监视**：输入凑齐即自动 `operate`，产出即生成搬运任务 |
+| M4-4 | **失败回执**：`Robot.astra` 的 `@message(request, transfer)` 用 `try { ... } recover { send(failure, sender, transfer(from, to)) }`；`Main.astra` 加 `@message(failure, string sender, transfer(string from, string to))`，加 `+failed(from, to)` 信念；`!transfer` 把 `wait(transferred(from, to))` 改为等 `transferred | failed`，失败时打印并让当前订单失败而不是永久等待（规则 9） |
 
-验收：**验收项 2、3、7** —— 并发日志重叠、两级产线跑通、抢 zone 不死锁。
-
----
-
-### M5 — 策略打磨（可砍，砍了就少几分）
-
-| # | 做什么 |
-|---|---|
-| M5-1 | 充电改**阈值触发**（当前 Robot 是搬完必充，白耗时间） |
-| M5-2 | **存储背压**：目标被占 / 中间品等下游时，先 `sp` 暂存 |
-| M5-3 | 优先级：先做能解锁下游的任务 |
-| M5-4 | 日志可读（时间戳 + 订单号 + 机器人名） |
+验收：**验收项 7** —— 机器人搬运失败时 Main 不卡死。
 
 ---
 
@@ -161,13 +169,12 @@ graph LR
 |---|---|---|---|---|
 | **M1** 补工件缺口 | coding | **Java**（CArtAgO artifact） | `Floorplan.zonesOfType`、`PackagingPoint.deliver` 结单换单、新建 `Metrics.java`、修 3 个 bug、`configure` 可重复（M1-5） | 🟡 代码已完成并 push（`28a7e3a`）；**下一步：专项测试**（见 M1 节） |
 | **M2** 动态场景 | coding | **ASTRA** | 去掉 35 处硬编码 `ap1` / `r1`，改成列表循环创建 | ✅ 完成（M2-1～M2-4）；**下一步：M1 专项测试 / M3 订单闭环** |
-| **M3** 订单闭环 | coding | ASTRA | LoadOrder → DeliverOrder → 换单 | ⬜ |
-| **M4** 任务编排 + 并发 | coding（**工作量最大**） | ASTRA：新建 `Manager.astra` / `Broker.astra` | 依赖 DAG、CNP 投标、`failure` 重派 | ⬜ |
-| **M5** 策略打磨 | coding（可砍） | ASTRA | 阈值充电、storage 暂存 | ⬜ |
+| **M3** 订单闭环 | coding | ASTRA | LoadOrder → DeliverOrder → 换单；多层依赖；订单价值 | 🟡 M3-1、M3-3 ✅；M3-2 待 o3 端到端确认 |
+| **M4** 失败回执 | coding | `Robot.astra`、`Main.astra` | `failure` 回执，防永久等待 | ⬜ **下一步** |
 | **M6** 报告 + 视频 | 非 coding | — | 英文 report、3–5 分钟视频 | ⬜ |
 
 > **提醒**
-> 1. Design 不是一次性的：coding 中若发现设计走不通（如 CNP 的 deadline 在 ASTRA 里难实现），**回头改 [M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) §9**，保持 design ↔ implementation 一致。
+> 1. Design 不是一次性的：coding 中若发现设计走不通，**回头改 [M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) §9**，保持 design ↔ implementation 一致。
 > 2. 最终 report 需**英文**，M6 时把 M0 文档里的 GAIA 模型整理成英文版。
 
 ---
@@ -177,8 +184,6 @@ graph LR
 | 风险 | 应对 |
 |---|---|
 | **设计 ↔ 实现漂移** → 代码偏离 §9 设计，丢 40% | 每改一处协议 / 计划，同步更新 [M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) §5 与 §9 |
-| **M4 范围失控** | 先做「2 机器人 + 单层依赖」能跑通，再叠多层依赖 |
 | 一次移动≈4 秒，调试周期长 | 临时把 `Thread.sleep` 调小（如 200ms）加速调试，交付前改回 |
-| **`Floorplan.move` 串行化**：sleep 在 Floorplan 内，多机器人 move 可能排队 → 削弱验收项 2 | M4 先实测两条 transfer 是否时间重叠；若串行，把 `sleep` 移到 `Robot.move` 中、Floorplan 只做瞬时占位（需同步改 §9 设计说明） |
-| `Main` 单点卡死 | M4-4 的 `failure` + 超时是硬要求，不是加分项 |
+| `Main` 单点卡死 | M4-4 的 `failure` 回执是硬要求，不是加分项 |
 | 设计文档写成功能清单 | GAIA 要写 **role / interaction / organisation rule**，不是"系统能做什么" |

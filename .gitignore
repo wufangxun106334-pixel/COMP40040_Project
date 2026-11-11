@@ -10,3 +10,6 @@ target/
 
 # macOS
 .DS_Store
+
+# 自动快照备份
+docs/backup/

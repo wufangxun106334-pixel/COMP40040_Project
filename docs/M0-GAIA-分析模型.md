@@ -40,10 +40,9 @@ tags: [COMP40040, GAIA, MAS, analysis, manufacturing-mayhem]
 | 订单闭环：装载 → 到齐 → deliver → 换单（验收 4） | 跟踪订单、触发交付、换单 | **Order Manager** |
 | 目标函数：每单耗时 + 总价值（验收 5） | 计时计价 | **Metrics Keeper** |
 | 多层依赖：WS-A 产出作为 WS-B 输入（验收 3） | 展开依赖、生成任务 | **Production Planner** |
-| ≥2 机器人并发搬运（验收 2） | 任务分配、并发 | **Resource Broker** + **Transporter** |
-| 不因冲突死锁（验收 7） | 互斥、等待/绕行 | **Resource Broker** |
-| 低电自动充电（验收 6） | 能量管理 | **Transporter**（+ Broker 协调充电点） |
-| 不假设 zone/robot 数量（验收 1） | 动态发现角色、按池分派 | 所有角色（尤其 **Resource Broker**） |
+| 不因冲突死锁（验收 7） | 互斥、失败回执 | **Resource Broker** + **Transporter** |
+| 低电自动充电（验收 6） | 能量管理 | **Transporter** |
+| 不假设 zone/robot 数量（验收 1） | 动态发现角色 | 所有角色 |
 | 设计可追溯（验收 8） | 角色 ↔ 计划映射 | 本文件 §5 |
 
 > **结论**：需求自然切出 **6 个角色** —— OM、PP、RB、T(×N)、WM、MK。
@@ -125,10 +124,10 @@ tags: [COMP40040, GAIA, MAS, analysis, manufacturing-mayhem]
 | **P1** | Order-Intake | OM | PP | 订单装入 | `request(newOrder, items)` → `inform(accepted)` | PP 生成任务 | PP 拒收（物料不存在） |
 | **P2** | Task-Dispatch | PP | RB | 有待搬运任务 | `request(transport, from, to, item)` → `inform(granted)\|inform(denied)` | 任务进入分配 | 无可用机器人 → 重试 |
 | **P3** | Work-Order | PP | WM | 某 WS 输入将齐 / 收到 outputReady | `request(operate, ws)` ↔ `inform(outputReady, ws, item)` | WS 产出成品 | WS 未 ready → 等待 |
-| **P4** | Transport-Assign（**Contract Net**，见 §9.2） | RB | T（全部可用 Robot） | 有任务 + 有可用机器人 | `cfp(transport)` → `propose(cost)\|refuse` → `accept-proposal\|reject-proposal` | 中标机器人执行搬运 | 全员 refuse / 超时无标 → 任务回队列重发 |
-| **P5** | Transport-Result | T | RB（转 PP） | 搬运结束 | `inform(transferred, from, to)` / `inform(failure, reason)` | PP 更新任务状态 | PP 重派任务 |
+| **P4** | Transport-Assign | RB | T（选中的一个 Robot） | 有搬运任务 | `request(transfer, from, to)` | 机器人执行搬运 | 见 P5 failure |
+| **P5** | Transport-Result | T | RB | 搬运结束 | `inform(transferred, from, to)` / `failure(transfer, from, to)` | 推进下一步 | 当前订单失败，不永久等待 |
 | **P6** | Metrics-Record | OM | MK | 订单开始 / 完成 | `inform(orderStarted, id)` / `inform(orderFulfilled, id, value)`（时间由 `Metrics` 工件自取） | 计入统计 | — |
-| **P7** | Charge-Notify | T | RB | 电量 < 阈值 | `inform(charging)` → …充电… → `inform(charged)` | RB 在充电期间不向其发 cfp | —（充电点为机器人专属，无争抢） |
+| **P7** | Recharge（Robot 私有活动，非消息协议） | T | — | 每次搬运后 | 回充电点循环 `charge()` 至满 | energy = max | — |
 
 > **对照现有代码**：当前只有 `P4/P5` 的雏形——`Main` 用 `send(request, robot, transfer(from,to))` + `wait(transferred(from,to))`（见 `Main.astra` `+!transfer`），`Robot.astra` 用 `@message(request,...,transfer(from,to))` 接收、`send(inform, sender, transferred(from,to))` 回复。**P1、P2、P3、P5-failure、P6、P7 都是新增。**
 
@@ -216,12 +215,12 @@ flowchart LR
 
 | 角色 | 现有可复用计划（`Base.astra` / `Main.astra` / `Robot.astra`） | 需新增计划 | 目标文件 |
 | --- | --- | --- | --- |
-| **OM** | `!order`、`!packagingPoint`、`?available`(pp) | `!orderLoop`、`!deliver`、`?outstanding`、`!loadNextOrder` | `Manager.astra` 订单计划组 |
-| **PP** | `?inputsNeeded`、`?state`、`!configure`、`!available`(ap)、`!operate` | `!expandDependencies`、`!planTasks`、`!dispatch` | `Manager.astra` 编排计划组 |
-| **RB** | `?locations`、`?free`（`isOccupied`） | `!allocate`（发 cfp + 收标 + 授标）、`!trackRobot`、`?availableRobots` | `Broker.astra`（新） |
-| **T** | `!at`、`!holding`、`!empty`、`@message(request,...,transfer)` 骨架 | `@message(cfp)` 投标、`@message(accept-proposal)` 执行、`failure` 回执、阈值充电 + P7 通知 | `Robot.astra` |
-| **WM** | `?state`、`!operate` | 监视循环、`outputReady` 上报 | `Manager.astra` 监视计划组 |
-| **MK** | — | 依赖 `Metrics` 工件 | 新 `Metrics.java` + `Manager.astra` 查询计划 |
+| **OM** | `!order`、`!packagingPoint`、`?orderStatus`、`!deliver`（Base） | `!orderLoop`（Main） | `Main.astra` / `Base.astra` |
+| **PP** | `?inputsNeeded`、`?state`、`!configure`、`!available`（Base） | `!expand`、`!produceItem`、`!runStep`、`!supply`、`!storeItem`（Base） | `Base.astra` |
+| **RB** | `?free`、`!discoverZones`（Base） | `!transfer` 选机器人发请求、`@message(inform, transferred)`（Main） | `Main.astra` |
+| **T** | `!at`、`!holding`、`!empty`（Base） | `@message(request, transfer)` 执行 + 充电至满、`failure` 回执（M4-4） | `Robot.astra` |
+| **WM** | `?state`、`!operate`（Base） | 在 `!runStep` 中补齐输入后 `!operate` | `Base.astra` |
+| **MK** | — | `Metrics` 工件；`!orderLoop` 调 `orderStarted` / `orderFulfilled` | `Metrics.java` + `Main.astra` |
 
 **「需求 → 角色 → 协议 → 计划」一跳示例**（把这条链讲清楚即可过验收）：
 
@@ -229,8 +228,8 @@ flowchart LR
 需求：多层依赖（验收 3）
   └─ 角色：Production Planner(R2)
        └─ 协议：P2 Task-Dispatch / P3 Work-Order
-            └─ 计划：!expandDependencies (Main.astra)
-                     → request(transport,...) → Broker
+            └─ 计划：!expand / !produceItem / !runStep (Base.astra)
+                     → !transfer → request(transfer) → Robot
                      → !operate (Base.astra, 已有)
 ```
 
@@ -254,116 +253,68 @@ flowchart LR
 | SOP 验收 | 本模型如何保证 |
 | --- | --- |
 | 1 不假设数量 | RB 用 `?locations` + `zonesOfType` 动态发现；机器人数 = Transporter 数 |
-| 2 ≥2 机器人并发 | P2/P4/P5 异步派发；Broker 以 CNP 向所有可用 Robot 并行发标（§9.2） |
-| 3 多层依赖 | PP 的 `!expandDependencies` 递归展开 `inputsNeeded` |
-| 4 订单闭环 | OM 的 `!orderLoop` + `!deliver` + `!loadNextOrder` |
+| 3 多层依赖 | PP 的 `!expand` 递归展开配方，`buildStep` 序号即生产顺序 |
+| 4 订单闭环 | OM 的 `!orderLoop` + `!order` + `!deliver` |
 | 5 目标函数可读 | MK 的 `Metrics`（totalTime/totalValue/ordersDone） |
-| 6 低电自动充电 | Robot 的 Recharge service（阈值触发）+ P7 Charge-Notify 通知 Broker |
-| 7 不死锁 | Manager 只派可执行任务 + `Floorplan` 底层互斥 + P5 `failure` 回执重派（§9.3 冲突策略） |
+| 6 低电自动充电 | Robot 每次搬运后回充电点充满（P7 Recharge 私有活动） |
+| 7 不死锁 | `Floorplan` 底层互斥 + P5 `failure` 回执（M4-4） |
 | 8 设计可追溯 | §5 角色→计划映射表 |
 
 ---
 
 ## 9. 设计阶段（Design Phase）
 
-> GAIA **design phase** 产出 = **Agent Model + Services Model + Acquaintance Model**，全部由 §2 角色、§3 协议推导。
-> 已确认决策（2026-11-03）：① 3 类 agent；② 任务分配用 **Contract Net Protocol（CNP，合同网协议）**；③ P7 保留为协议（Charge-Notify）。
+> GAIA **design phase** 产出 = **Agent Model + Services Model + Acquaintance Model**。
+> 2026-11-11 范围收缩：原 3 类 agent + CNP 方案已实现后**撤回**（`COMP40040_Project.docx` 未要求），改为 2 类 agent + **集中式任务分配**（centralised allocation，课上 coordination 方法之一：一个协调者统一分派任务）。
 
 ### 9.1 Agent Model（智能体模型）
 
 | Agent type | 扮演 role | 实例数（GAIA 记法） | 理由 |
 | --- | --- | --- | --- |
-| `Manager` | OM + PP + WM + MK | **1** | 四者共享订单与任务 DAG 状态，合并避免状态同步 |
-| `Broker` | RB | **1** | CNP 的 **manager（发标方）**，集中持有 zone / 机器人分配权（规则 4） |
-| `Robot` | T | **+**（≥1，由 scenario 决定） | CNP 的 **contractor（投标方）**，运行时动态创建，不写死数量 |
+| `Main` | OM + PP + RB + WM + MK | **1** | 订单、生产规划、任务分派共享同一状态，集中在一个协调者 |
+| `Robot` | T | **+**（≥1，由 scenario 的 `robotSpec` 决定） | 运行时动态创建，不写死数量 |
 
 > 记法：`1` = 恰好一个；`+` = 一个或多个。
 
 ```mermaid
 flowchart TB
-    M["Manager ×1<br/>OM · PP · WM · MK"]
-    B["Broker ×1<br/>RB"]
+    M["Main ×1<br/>OM · PP · RB · WM · MK"]
     R["Robot +<br/>T"]
-    M --> B --> R
+    M -- "request transfer(from,to)" --> R
+    R -- "inform transferred / failure" --> M
 ```
 
-### 9.2 P4 的 Contract Net 细化
+### 9.2 Services Model（服务模型）
 
-```text
-Broker ──cfp(transport(from,to,item))──▶ 所有可用 Robot（排除 busy / charging）
-Robot  ──propose(cost) / refuse────────▶ Broker      （deadline 超时截止）
-Broker ──accept-proposal──▶ 中标者；reject-proposal──▶ 其余投标者
-中标者 ──inform(transferred) / failure──▶ Broker    （= P5）
-```
+| Agent | Role | Service | 计划 | Pre-condition | Post-condition |
+| --- | --- | --- | --- | --- | --- |
+| Main | OM | **LoadOrder** | `!order` | pp 为 cleared | pp loaded；`orderStarted` |
+| Main | OM | **DeliverOrder** | `?orderStatus` + `!deliver` | pp 为 fulfilled | pp cleared；`orderFulfilled`；取下一张 |
+| Main | PP | **ExpandDependencies** | `!expand` | 零件有配方或库存 | `buildStep` 按依赖顺序编号 |
+| Main | PP | **RetrieveMaterial** | `!available` | ap 无货 | 物料置于 ap |
+| Main | PP | **Produce** | `!produceItem` → `!runStep` | 步骤的输入已产出 | 产物存 SP（`storedAt`）或送 pp |
+| Main | RB | **AssignTransport** | `!transfer` | 有可用机器人 | 机器人执行搬运，等到 P5 回执 |
+| Main | WM | **OperateWorkstation** | `!operate` | ws ready | ws done |
+| Main | MK | **RecordEvent** | `Metrics.orderStarted / orderFulfilled` | 事件未记录过 | 累计值单调不减 |
+| Robot | T | **ExecuteTransfer** | `@message(request, transfer)` | holding = none | 物料到达 to；回执 transferred（失败回执 failure） |
+| Robot | T | **Recharge** | 同上计划末尾的 `charge()` 循环 | 搬运结束 | energy = max |
 
-**Bid（投标值）**：`Location` 无坐标、每次 `move` 固定耗能，故以**预估能耗**为标价：
+**Zone 冲突**：`Floorplan.move` 底层互斥（目标被占抛异常）；Robot 失败回执 `failure`，Main 不永久等待（M4-4，规则 9）。
 
-$$cost = [\,at \neq from\,]\cdot 100 + 50 + 100 + 50$$
-
-- **refuse（拒标）**：机器人 busy，或 $energy - cost < 100$（须留回家充电的电量）。
-- **award（授标）**：$cost$ 最低者中标；平局取剩余 $energy$ 最高者。
-- 效果：已停在 `from` 的机器人自然胜出（省一次 move）。
-
-**新增消息词汇（补 §3.2）**
-
-| 消息公式 | 方向 | performative |
-| --- | --- | --- |
-| `transport(string from, string to, string item)` | RB → T | `cfp` |
-| `bid(int cost)` | T → RB | `propose` |
-| `transport(...)` | T → RB | `refuse` |
-| `award(string from, string to)` | RB → T | `accept-proposal` / `reject-proposal` |
-| `charging()` / `charged()` | T → RB | `inform`（P7） |
-
-### 9.3 Services Model（服务模型）
-
-> 每个 service = 某 role 的一项功能，给出 **inputs / outputs / pre-condition / post-condition**。
-
-| Agent | Role | Service | Inputs | Outputs | Pre-condition | Post-condition |
-| --- | --- | --- | --- | --- | --- | --- |
-| Manager | OM | **LoadOrder** | pp, product list | order | pp 为 CLEARED / 空 | pp LOADED；记录 `orderStarted` |
-| Manager | OM | **DeliverOrder** | pp | value | `outstanding` 为空 | pp CLEARED；记录 `orderFulfilled`；触发 LoadOrder |
-| Manager | PP | **ExpandDependencies** | order items, ws 配置 | task DAG | order 已 LOADED | DAG 每个 leaf 都是可在 AP 取得的 raw material |
-| Manager | PP | **ConfigureWorkstation** | ws, product | — | ws IDLE 且未被占用 | ws 输出 product，`inputsNeeded` 已设 |
-| Manager | PP | **RetrieveMaterial** | ap, item | — | ap 空闲（`available` = none） | item 置于 ap，待机器人 load |
-| Manager | PP | **DispatchTask** | ready task | `transport(from,to,item)` → Broker | 源 item 已就位；目标可接收 | task 状态 = DISPATCHED |
-| Manager | WM | **OperateWorkstation** | ws | — | ws READY | ws ACTIVE → DONE |
-| Manager | WM | **ReportOutput** | ws | 新 transport task | ws DONE | 产出搬运任务进入 DAG |
-| Manager | MK | **RecordEvent** | order id, t, value | totals | 事件未记录过 | `totalTime` / `totalValue` / `ordersDone` 单调不减 |
-| Broker | RB | **AllocateTransport**（CNP manager） | transport task | award | ≥1 可用 Robot | 恰 1 个 Robot 中标；无人中标 → 回队列 |
-| Broker | RB | **TrackRobot** | transferred / failure / charging / charged | 结果转发 Manager | 收到 P5 / P7 消息 | Robot 标记 idle / busy / charging |
-| Robot | T | **Bid**（CNP contractor） | cfp | propose / refuse | Robot idle | 回复 cost 或 refuse |
-| Robot | T | **ExecuteTransfer** | award(from,to) | transferred / failure | 中标且 holding = none | item 到达 to、holding = none；或已回执 failure |
-| Robot | T | **Recharge** | — | charging / charged | energy < 阈值 | energy = max；已 inform Broker |
-
-**Zone 冲突策略（已确认）**：两层防护，不做 zone reservation（预留）。
-
-1. **预防**：DispatchTask 的 pre-condition 保证只派**可执行**任务（目标 ws 非 ACTIVE/DONE、目标 sp 空、源 item 已就位）。
-2. **兜底**：`move` 遇 zone 被占（`Floorplan` 抛异常）→ Robot 短暂等待后重试；仍失败 → `failure` 回执 → Broker 转 Manager → 任务回队列重派（满足规则 9，不死锁）。
-
-### 9.4 Acquaintance Model（熟人模型）
-
-> 只表达**谁与谁存在通信路径**，不含消息细节。
-
-```mermaid
-flowchart LR
-    M[Manager ×1] <-->|P2 transport / P5 结果转发| B[Broker ×1]
-    B <-->|P4 CNP / P5 / P7| R[Robot +]
-```
+### 9.3 Acquaintance Model（熟人模型）
 
 | 通信对 | 方向 | 协议 |
 | --- | --- | --- |
-| Manager ↔ Broker | 双向 | P2（发任务）、P5（Broker 转发 transferred / failure） |
-| Broker ↔ Robot | 双向 | P4（CNP）、P5（结果）、P7（charging / charged） |
-| Manager ↔ Robot | **无** | 规则 4：所有搬运必须经 Broker |
-| Robot ↔ Robot | **无** | 仅经 `Floorplan` artifact 间接协调 |
+| Main ↔ Robot | 双向 | P4 `request transfer`、P5 `inform transferred` / `failure` |
+| Robot ↔ Robot | **无** | 仅经 `Floorplan` 工件间接协调 |
 
-**说明**：P1 / P3 / P6 的两端（OM、PP、WM、MK）都由 `Manager` 扮演，在实现中退化为**同一 agent 内部的计划调用**，不产生消息——报告需明确说明此点。
-结构为**两层 hierarchical + 单一 hub（Broker）**，通信路径最少，符合 GAIA 的 **low coupling（低耦合）** 原则。
+P1 / P2 / P3 / P6 两端都由 `Main` 扮演，实现为**同一 agent 内的计划调用**，不产生消息。结构为**星形（star）**：Main 是唯一的协调中心。
 
-### 9.5 Design 阶段检查
+### 9.4 已撤回的设计（报告中可作为"设计取舍"讨论）
 
-- [x] Agent Model：3 类 agent，实例数不写死（Robot `+`）
-- [x] Services Model：14 个 service，均有 pre / post-condition
-- [x] Acquaintance Model：2 条通信路径
-- [x] 协调机制明确（CNP），并回写 §3.1 的 P4 / P7
-- [x] §5 traceability 已对齐到 `Manager.astra` / `Broker.astra` / `Robot.astra`
+| 撤回项 | 原因 |
+| --- | --- |
+| `Broker` agent + Contract Net 投标 | docx 未要求；机器人每次回充电点，投标 cost 恒定，CNP 无实际区分度 |
+| 任务 DAG（`dependsOn` / `readyStep`） | 只为并发服务；docx 不要求并发 |
+| 库存预检 + 拒收 | docx 未要求 |
+| Workstation 重新配置 | docx 未要求；当前每个工作站只做一种产品 |

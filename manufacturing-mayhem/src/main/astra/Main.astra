@@ -1,143 +1,74 @@
-// ============================================================================
-// Main.astra —— 系统入口 agent
-// 职责：1) 搭建工厂场景（!setup）；2) 用一条写死的示例流程演示各工件的用法。
-// 启动方式：父 POM (astra-cartago-base) 中 astra.main=Main / astra.name=main，
-//           运行时由 ASTRA 启动名为 main 的 Main agent，触发下面的 !main 计划。
-// ============================================================================
+// 入口 agent：按场景信念搭建工厂，并逐张处理订单
 agent Main extends Base {
-
-    // ========================================================================
-    // [0] 场景数据（M2-1）—— 以初始信念（initial belief）描述，换场景只改这里
-    //   zone(类型, 名字)            类型：ap / sp / pp / ws
-    //   robotSpec(名字)             每个机器人自动配一个 <名字>-charger 充电点
-    //   stock(物料, 数量)           仓库初始库存
-    //   recipe(工作站, 输入, 产出, 耗时ms)   duration 为 long，须写 2000l
-    //   initialOrder(包装点, 零件)   示例订单（M3 订单闭环后移出 setup）
-    // ========================================================================
+    // 场景数据：换场景只改下面的 initial
     types scenario {
         formula zone(string, string);
         formula robotSpec(string);
-        formula stock(string, int);
-        formula recipe(string, list, string, long);
-        formula initialOrder(string, list);
+        formula orderSpec(string, list, int);
     }
 
-    initial stock("apples", 2);
-    initial stock("pastry", 10);
+    // 订单队列：orderSpec(编号, 零件, 价值)
+    initial orderSpec("o1", ["apple-pie"], 10);
+    initial orderSpec("o2", ["apple-pie"], 10);
+    initial orderSpec("o3", ["boxed-pie"], 30);
 
+    // 仓库库存
+    initial stock("apples", 4);
+    initial stock("pastry", 10);
+    initial stock("box", 5);
+
+    // zone(类型, 名字)，类型为 ap / sp / pp / ws
     initial zone("ap", "ap1");
     initial zone("ap", "ap2");
     initial zone("sp", "sp1");
     initial zone("pp", "pp1");
     initial zone("ws", "ws1");
+    initial zone("ws", "ws2");
 
+    // 机器人，每个自动配 <名字>-charger
     initial robotSpec("r1");
     initial robotSpec("r2");
 
+    // 工作站配方：输入、产出、耗时（long）
     initial recipe("ws1", ["apples", "pastry"], "apple-pie", 2000l);
-    initial initialOrder("pp1", ["apple-pie"]);
+    initial recipe("ws2", ["apple-pie", "box"], "boxed-pie", 2000l);
 
-    // ========================================================================
-    // [1] 入口计划：初始化运行时 + 建场景 + 跑一遍示例产线
-    // 参数 args 为命令行传入的启动参数列表（本例未使用）。
-    // ========================================================================
+    // 启动：建场景、创建 Robot agent、发现 zone、处理订单
     plan +!main(list args) {
-        // 启动 CArtAgO 工作区（Workbench）服务：所有 artifact 都活在这个工作区里
         cartago.startService();
-        // 本 agent 加入工作区（相当于"连接"）。不 link 就无法 makeArtifact / operation
         cartago.link();
 
-        // 一次性把所有工件（仓库、区域、订单、机器人、工作站）建出来
         !setup();
 
-        // 重新获取 floorplan 的 ArtifactId。
-        // 注意：上面 !setup() 里已创建过 floorplan，这里走的是 Base 中的
-        //       try-lookup / recover-make 分支，实际是"查找"而非"新建"。
         !floorplan(cartago.ArtifactId _);
 
-        // M2-3：按场景信念为每个机器人创建一个 Robot agent（agent 名 = 工件名，
-        //       Robot.astra 用 S.name() 找回自己的工件，故无需任何写死的名字）
         foreach (robotSpec(string name)) {
             S.createAgent(name, "Robot");
         }
 
-        // M2-2：从 Floorplan 动态发现 zone，存为 zoneOf(角色, 名字) 信念
         !discoverZones();
 
-        // --------------------------------------------------------------------
-        // M2-4：示例生产流程，所有 zone / 机器人名都来自信念查询，不含字面量。
-        // 目标 = 用一个工作站凑齐输入 → 生产 → 经存储点 → 送到包装点。
-        // （单机器人顺序执行；多机器人并发与任务分配见 M4）
-        // --------------------------------------------------------------------
-        ?zoneOf("Workstation", string ws);
-        ?zoneOf("AccessPoint", string ap);
-        ?zoneOf("StoragePoint", string sp);
-        ?zoneOf("PackagingPoint", string pp);
-        ?robot(string r, cartago.ArtifactId rid);
-        cartago.println("[plan] robot=" + r + " ap=" + ap + " ws=" + ws + " sp=" + sp + " pp=" + pp);
+        !metrics(cartago.ArtifactId _);
 
-        // ① 由 inputsNeeded 驱动取料：缺什么取什么，直到工作站变为 ready
-        ?state(ws, string state);
-        while (state ~= "ready") {
-            ?inputsNeeded(ws, list items);
-            !available(ap, P.headAsString(items));
-            !transfer(r, ap, ws);
-            ?state(ws, string state2);
-            state = state2;
+        foreach (zoneOf("PackagingPoint", string pp)) {
+            !orderLoop(pp);
         }
-        cartago.println(ws + " is: " + state);
-
-        // ② 生产：ready → active → done（!operate 内部轮询直到 done）
-        !operate(ws);
-
-        // ③ 产出先暂存到存储点，再送到包装点
-        !transfer(r, ws, sp);
-        ?available(sp, string spItem);
-        !transfer(r, sp, pp);
-
-        // ⚠️ 注意：这里【没有】调用 !deliver("pp1")。
-        //    因此订单永远不会被标记为已结清（PackagingPoint.deliver() 本身
-        //    也只是个打印桩），后续"订单完成时间 / 价值统计"也无从谈起。
     }
 
-    // ========================================================================
-    // [2] !transfer —— 向机器人"同步"下发一次搬运任务（请求/回复模式）
-    // 参数：name = 机器人名，from = 起点 zone，to = 终点 zone
-    //
-    // 这是 Main 与 Robot agent 之间唯一的通信方式，三步构成一次"远程调用"：
-    //   send(request, ...)   发请求
-    //   wait(...)            阻塞等待对方回信（BDI 层挂起）
-    //   -transferred(...)    收到后立即删除信念，避免污染下一次等待
-    //
-    // 局限：Main 在此是串行的，一次只能有一个 transfer 在飞；
-    //       若对方执行失败（电量不足 / 目标被占 / 报错）而【不回 inform】，
-    //       本计划会永久卡在 wait 上（死锁）——因为没有 failure 分支处理。
-    // ========================================================================
+    // 请求机器人搬运并等待回执
     plan +!transfer(string name, string from, string to) {
         send(request, name, transfer(from, to));
         wait(transferred(from, to));
         -transferred(from, to);
     }
 
-    // ========================================================================
-    // [3] 消息处理器 —— 接收机器人搬运完成后的回信
-    // 触发条件：收到类型 inform、内容 transferred(from, to) 的消息，
-    //          sender 为发送者名字（即机器人名）。
-    // 作用：+transferred(from, to) 把该断言变成信念，
-    //       从而解开 [2] 中挂起的 wait，让 !main 继续往下执行。
-    // ========================================================================
+    // 收到搬运回执
     plan @message(inform, string sender, transferred(string from, string to)) {
         cartago.println(sender + " is at location: " + to);
         +transferred(from, to);
     }
 
-    // ========================================================================
-    // [4] !setup —— 按 [0] 的场景信念搭建工厂（列表驱动，不含任何写死的名字）
-    //
-    // 执行顺序有依赖，不能随意调换：
-    //   仓库 → Floorplan（各 zone 都要 install 到它身上）→ zone → 机器人；
-    //   工作站要先创建、再 configure；包装点要先创建、再装订单。
-    // ========================================================================
+    // 按场景信念创建所有工件
     plan +!setup() {
         !warehouse(cartago.ArtifactId wId);
         foreach (stock(string item, int qty)) {
@@ -150,7 +81,6 @@ agent Main extends Base {
             !createZone(type, name);
         }
 
-        // 每个 !robot 会先建 <name>-charger 充电点，再建 Robot 工件并以充电点为 home
         foreach (robotSpec(string name)) {
             !robot(name, cartago.ArtifactId rid);
         }
@@ -158,13 +88,28 @@ agent Main extends Base {
         foreach (recipe(string ws, list inputs, string output, long duration)) {
             !configure(ws, inputs, output, duration);
         }
-
-        foreach (initialOrder(string pp, list items)) {
-            !order(pp, items);
-        }
     }
 
-    // 按类型分派到 Base.astra 的创建计划；未知类型无匹配计划 → 报错，便于发现场景写错
+    // 处理下一张订单：装单 → 生产 → 校验 → 交付 → 记账
+    plan +!orderLoop(string pp) : orderSpec(string id, list items, int value) & metrics(cartago.ArtifactId mId) {
+        -orderSpec(id, items, value);                  // 出队
+        !order(pp, items);                             // LoadOrder：status → loaded
+        cartago.operation(mId, orderStarted(id));      // P6
+        forall (string item : items) {
+            !produceItem(pp, item);
+        }
+        ?orderStatus(pp, "fulfilled");                 // 安全检查：零件全到才能 deliver
+        !deliver(pp);                                  // DeliverOrder：status → cleared
+        cartago.operation(mId, orderFulfilled(id, value));
+        !orderLoop(pp);                                // 下一张
+    }
+
+    // 订单处理完毕
+    plan +!orderLoop(string pp) {
+        cartago.println("[OM] all orders done at " + pp);
+    }
+
+    // 按类型创建 zone
     plan +!createZone("ap", string name) { !accessPoint(name, cartago.ArtifactId aid); }
     plan +!createZone("sp", string name) { !storagePoint(name, cartago.ArtifactId aid); }
     plan +!createZone("pp", string name) { !packagingPoint(name, cartago.ArtifactId aid); }

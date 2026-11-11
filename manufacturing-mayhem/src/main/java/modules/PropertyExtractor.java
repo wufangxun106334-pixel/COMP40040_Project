@@ -25,6 +25,13 @@ public class PropertyExtractor extends Module {
     public String stringValue(ArtifactObsProperty property) {
         return property.stringValue();
     }
+
+    // 读取数值型观察属性（如 energy / maxEnergy，工件里是 int）
+    // 供 M5 电量阈值判断与"充满为止"充电循环使用
+    @TERM
+    public int intValue(ArtifactObsProperty property) {
+        return property.intValue();
+    }
     
     @FORMULA
     public Formula isBound(String value) {
