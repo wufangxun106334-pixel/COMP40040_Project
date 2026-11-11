@@ -293,11 +293,11 @@ flowchart TB
 | Main | PP | **ExpandDependencies** | `!expand` | 零件有配方或库存 | `buildStep` 按依赖顺序编号 |
 | Main | PP | **RetrieveMaterial** | `!available` | ap 无货 | 物料置于 ap |
 | Main | PP | **Produce** | `!produceItem` → `!runStep` | 步骤的输入已产出 | 产物存 SP（`storedAt`）或送 pp |
-| Main | RB | **AssignTransport** | `!transfer` | 有可用机器人 | 机器人执行搬运，等到 P5 回执 |
+| Main | RB | **AssignTransport** | `!transfer(from,to)` → `!transfer(r,from,to)` | 存在 `idle(r)`（否则 500ms 后重试） | `-idle(r)`；机器人执行搬运，等到 P5 回执 |
 | Main | WM | **OperateWorkstation** | `!operate` | ws ready | ws done |
 | Main | MK | **RecordEvent** | `Metrics.orderStarted / orderFulfilled` | 事件未记录过 | 累计值单调不减 |
 | Robot | T | **ExecuteTransfer** | `@message(request, transfer)` | holding = none | 物料到达 to；回执 transferred（失败回执 failure） |
-| Robot | T | **Recharge** | 同上计划末尾的 `charge()` 循环 | 搬运结束 | energy = max |
+| Robot | T | **Recharge** | `!recharge`（回执 transferred 之后） | 搬运结束 | energy = max；回 `inform ready` → Main `+idle(r)` |
 
 **Zone 冲突**：`Floorplan.move` 底层互斥（目标被占抛异常）；Robot 失败回执 `failure`，Main 不永久等待（M4-4，规则 9）。
 
@@ -305,7 +305,7 @@ flowchart TB
 
 | 通信对 | 方向 | 协议 |
 | --- | --- | --- |
-| Main ↔ Robot | 双向 | P4 `request transfer`、P5 `inform transferred` / `failure` |
+| Main ↔ Robot | 双向 | P4 `request transfer`、P5 `inform transferred` / `failure`、`inform ready`（充满电、可接新任务） |
 | Robot ↔ Robot | **无** | 仅经 `Floorplan` 工件间接协调 |
 
 P1 / P2 / P3 / P6 两端都由 `Main` 扮演，实现为**同一 agent 内的计划调用**，不产生消息。结构为**星形（star）**：Main 是唯一的协调中心。

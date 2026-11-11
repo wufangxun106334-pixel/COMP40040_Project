@@ -5,6 +5,7 @@ agent Main extends Base {
         formula zone(string, string);
         formula robotSpec(string);
         formula orderSpec(string, list, int);
+        formula idle(string);                          // 空闲、可派任务的机器人
     }
 
     // 订单队列：orderSpec(编号, 零件, 价值)
@@ -44,6 +45,7 @@ agent Main extends Base {
 
         foreach (robotSpec(string name)) {
             S.createAgent(name, "Robot");
+            +idle(name);
         }
 
         !discoverZones();
@@ -53,6 +55,23 @@ agent Main extends Base {
         foreach (zoneOf("PackagingPoint", string pp)) {
             !orderLoop(pp);
         }
+    }
+
+    // 分派搬运给任一空闲机器人（集中式分配）；全忙则稍后重试
+    plan +!transfer(string from, string to) : idle(string r) {
+        -idle(r);
+        cartago.println("[RB] " + from + " -> " + to + " assigned to " + r);
+        !transfer(r, from, to);
+    }
+
+    plan +!transfer(string from, string to) {
+        S.sleep(500);
+        !transfer(from, to);
+    }
+
+    // 机器人充满电，重新空闲
+    plan @message(inform, string sender, ready(string r)) {
+        +idle(r);
     }
 
     // 请求机器人搬运并等待回执；收到 failure 则本目标失败，不永久等待

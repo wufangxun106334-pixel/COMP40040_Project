@@ -40,6 +40,7 @@ agent Base {
         formula transfer(string, string);
         formula transferred(string, string);
         formula failed(string, string);             // 搬运失败回执
+        formula ready(string);                      // 机器人充满电、可接新任务
     }
 
     module Cartago cartago;
@@ -220,8 +221,18 @@ agent Base {
     // 目标空闲则移动过去
     plan +!at(string name, string location) :
             robot(name, cartago.ArtifactId rid) {
-        ?free(location);
+        !waitFree(location);                    // 多机器人时目标可能暂时被占：等待而不是失败
         cartago.operation(rid, move(location));
+    }
+
+    // 轮询直到目标 zone 空闲
+    plan +!waitFree(string location) : floorplan(cartago.ArtifactId fpId) {
+        cartago.operation(fpId, isOccupied(location, boolean occ));
+        while (occ) {
+            S.sleep(500);
+            cartago.operation(fpId, isOccupied(location, boolean occ2));
+            occ = occ2;
+        }
     }
 
     // 从当前位置装载一件货
@@ -347,26 +358,26 @@ agent Base {
     }
 
     // 订单零件本身就是原料：直接从取料点送到包装点
-    plan +!produceItem(string pp, string item) : zoneOf("AccessPoint", string ap) & robot(string r, cartago.ArtifactId rid) {
+    plan +!produceItem(string pp, string item) : zoneOf("AccessPoint", string ap) {
         !available(ap, item);
-        !transfer(r, ap, pp);
+        !transfer(ap, pp);
     }
 
     // 执行一个生产步骤：补齐输入 → 运行 → 产物送包装点（最后一步）或存入存储点
-    plan +!runStep(string pp, int k, int last) : buildStep(k, string ws, string item) & zoneOf("AccessPoint", string ap) & robot(string r, cartago.ArtifactId rid) {
-        cartago.println("[PP] step " + k + "/" + last + ": " + ws + " -> " + item + " (robot=" + r + ")");
+    plan +!runStep(string pp, int k, int last) : buildStep(k, string ws, string item) & zoneOf("AccessPoint", string ap) {
+        cartago.println("[PP] step " + k + "/" + last + ": " + ws + " -> " + item);
         ?state(ws, string state);
         while (state ~= "ready") {
             ?inputsNeeded(ws, list needed);
-            !supply(P.headAsString(needed), ws, ap, r);
+            !supply(P.headAsString(needed), ws, ap);
             ?state(ws, string state2);
             state = state2;
         }
         !operate(ws);
         if (k == last) {
-            !transfer(r, ws, pp);
+            !transfer(ws, pp);
         } else {
-            !storeItem(ws, item, r);
+            !storeItem(ws, item);
         }
     }
 
@@ -374,23 +385,23 @@ agent Base {
     plan +!runStep(string pp, int k, int last) { }
 
     // 供料：中间品从存储点取，原料从取料点取
-    plan +!supply(string item, string ws, string ap, string r) : storedAt(item, string sp) {
+    plan +!supply(string item, string ws, string ap) : storedAt(item, string sp) {
         -storedAt(item, sp);
-        !transfer(r, sp, ws);
+        !transfer(sp, ws);
     }
 
-    plan +!supply(string item, string ws, string ap, string r) {
+    plan +!supply(string item, string ws, string ap) {
         !available(ap, item);
-        !transfer(r, ap, ws);
+        !transfer(ap, ws);
     }
 
     // 中间品存入一个空闲存储点
-    plan +!storeItem(string ws, string item, string r) : zoneOf("StoragePoint", string sp) & ~storedAt(string other, sp) {
-        !transfer(r, ws, sp);
+    plan +!storeItem(string ws, string item) : zoneOf("StoragePoint", string sp) & ~storedAt(string other, sp) {
+        !transfer(ws, sp);
         +storedAt(item, sp);
     }
 
-    plan +!storeItem(string ws, string item, string r) {
+    plan +!storeItem(string ws, string item) {
         cartago.println("[PP] no free storage point for " + item);
         S.fail();
     }

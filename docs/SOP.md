@@ -79,7 +79,7 @@ graph LR
 | M1-1 ✅ | 让 agent 能**按角色查 zone** | `Floorplan.java` | 已实现 `zonesOfType(String type, OpFeedbackParam<List<String>>)`；ASTRA 端 `cartago.operation(fpId, zonesOfType("AccessPoint", list aps))` 实测返回 `["ap2","ap1"]` → **Java `List<String>` 可直接回传为 ASTRA `list`**，无需 `pe.listValues`（结果顺序不固定） |
 | M1-2 ✅ | 订单能**结清 + 换单** | `PackagingPoint.java` | 补状态属性（`loaded`/`fulfilled`/`cleared`）；`deliver()` 真正重置 `order`/`outstanding`；允许再次 `setOrder`（完整运行中连续换单 o1→o2→o3 通过） |
 | M1-3 ✅ | 能**计时计价** | 新建 `artifacts/Metrics.java` | `orderStarted(id)` / `orderFulfilled(id, value)`，时间由工件自取；观察属性 `totalTime`、`totalValue`、`ordersDone`。**验收通过**：两单累计正确（516+302=818ms，10+5=15）；重复完成 / 未知订单 / 重复开始 / 负价值均被拒绝 |
-| M1-4 🟡 | 修 3 个 bug | `Robot.java`、`AccessPoint.java` | `load`/`unload` 判电量误用 `MOVE_COST` → 改 `LOAD_COST`；`charge()` 加 `maxEnergy` 封顶；`retrieve` 在已持货时拒绝（已修，示例产线回归通过；异常分支待测） |
+| M1-4 ✅ | 修 3 个 bug | `Robot.java`、`AccessPoint.java` | `load`/`unload` 判电量误用 `MOVE_COST` → 改 `LOAD_COST`；`charge()` 加 `maxEnergy` 封顶；`retrieve` 在已持货时拒绝（已修；边界测试通过：充电封顶、持货拒绝 retrieve；`Metrics` 重复/未知/负值拒绝，负值后可重试） |
 | ~~M1-5~~ ✂️ | ~~工作站能重复配置~~ | `Workstation.java` | **已撤回**：docx 未要求，`Workstation.java` 恢复为原始代码 |
 
 验收：`mvn -o compile` 通过；写一个临时 `!main` 逐条调用新 API 并打印，全部有正确输出。
@@ -148,7 +148,7 @@ graph LR
 | **M1** 补工件缺口 | coding | **Java**（CArtAgO artifact） | `Floorplan.zonesOfType`、`PackagingPoint.deliver` 结单换单、新建 `Metrics.java`、修 3 个 bug、`configure` 可重复（M1-5） | ✅ 由 M2–M4 运行覆盖验证（zonesOfType、deliver、Metrics） |
 | **M2** 动态场景 | coding | **ASTRA** | 去掉 35 处硬编码 `ap1` / `r1`，改成列表循环创建 | ✅ 完成（M2-1～M2-4） |
 | **M3** 订单闭环 | coding | ASTRA | LoadOrder → DeliverOrder → 换单；多层依赖；订单价值 | ✅ 完整运行通过：o1+o2+o3，ordersDone=3，totalValue=50，225 秒 |
-| **M4** 失败回执 | coding | `Robot.astra`、`Main.astra` | `failure` 回执，防永久等待 | ✅ 冒烟通过（故障注入 + o1 回归） |
+| **M4** 失败回执 | coding | `Robot.astra`、`Main.astra` | `failure` 回执，防永久等待；多机器人空闲分配 | ✅ 故障注入通过；r1/r2 各 6 次搬运，三单 176 秒 |
 | **M6** 报告 + 视频 | 非 coding | — | 英文 report、3–5 分钟视频 | ⬜ |
 
 > **提醒**

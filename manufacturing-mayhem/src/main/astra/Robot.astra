@@ -15,7 +15,7 @@ agent Robot extends Base {
         S.sleep(1000);
     }
 
-    // 搬运：去起点装货 → 去终点卸货 → 回充电点充满 → 回执；任一步失败回 failure
+    // 搬运：去起点装货 → 去终点卸货 → 立即回执（失败回 failure）→ 再去充电
     plan @message(request, string sender, transfer(string from, string to)) {
         try {
             cartago.println("received request for transfer from: "  + from + " to: " +to);
@@ -26,7 +26,17 @@ agent Robot extends Base {
             !empty(S.name());
 
             cartago.println("completed transfer from: "  + from + " to: " +to);
+            send(inform, sender, transferred(from, to));
+        } recover {
+            cartago.println("transfer failed: " + from + " -> " + to);
+            send(failure, sender, transfer(from, to));
+        }
+        !recharge(sender);
+    }
 
+    // 回充电点充满，再报告空闲（ready），Main 才会再派任务给自己
+    plan +!recharge(string sender) {
+        try {
             !at(S.name(), S.name()+"-charger");
             ?robot(S.name(), cartago.ArtifactId rid);
             ?maxEnergy(S.name(), int maxE);
@@ -38,11 +48,9 @@ agent Robot extends Base {
                 e = e2;
             }
             cartago.println("Charged...");
-
-            send(inform, sender, transferred(from, to));
+            send(inform, sender, ready(S.name()));
         } recover {
-            cartago.println("transfer failed: " + from + " -> " + to);
-            send(failure, sender, transfer(from, to));
+            cartago.println("recharge failed, out of service");
         }
     }
 

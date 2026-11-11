@@ -33,10 +33,10 @@ public class Metrics extends Artifact {
 
     @OPERATION
     public void orderFulfilled(String id, int value) throws Exception {
-        // remove 保证同一订单只计一次（不重复计数）
+        // 先校验再 remove：负值被拒时保留开始时间；remove 保证同一订单只计一次
+        if (value < 0) throw new Exception("Metrics: negative value for order: " + id);
         Long start = started.remove(id);
         if (start == null) throw new Exception("Metrics: unknown or already fulfilled order: " + id);
-        if (value < 0) throw new Exception("Metrics: negative value for order: " + id);
 
         long duration = System.currentTimeMillis() - start;
         long totalTime = getObsProperty(TOTAL_TIME).longValue() + duration;
