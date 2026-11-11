@@ -55,11 +55,21 @@ agent Main extends Base {
         }
     }
 
-    // 请求机器人搬运并等待回执
+    // 请求机器人搬运并等待回执；收到 failure 则本目标失败，不永久等待
     plan +!transfer(string name, string from, string to) {
         send(request, name, transfer(from, to));
-        wait(transferred(from, to));
+        wait(transferred(from, to) | failed(from, to));
+        if (failed(from, to)) {
+            -failed(from, to);
+            cartago.println("[OM] transfer " + from + " -> " + to + " failed");
+            S.fail();
+        }
         -transferred(from, to);
+    }
+
+    // 收到搬运失败回执
+    plan @message(failure, string sender, transfer(string from, string to)) {
+        +failed(from, to);
     }
 
     // 收到搬运回执
@@ -95,12 +105,19 @@ agent Main extends Base {
         -orderSpec(id, items, value);                  // 出队
         !order(pp, items);                             // LoadOrder：status → loaded
         cartago.operation(mId, orderStarted(id));      // P6
-        forall (string item : items) {
-            !produceItem(pp, item);
+        try {
+            forall (string item : items) {
+                !produceItem(pp, item);
+            }
+            ?orderStatus(pp, "fulfilled");             // 安全检查：零件全到才能 deliver
+            !deliver(pp);                              // DeliverOrder：status → cleared
+            cartago.operation(mId, orderFulfilled(id, value));
+        } recover {
+            cartago.println("[OM] order " + id + " failed, stop at " + pp);  // 包装点仍是 loaded，不能接下一单
+            foreach (orderSpec(string oid, list oit, int ov)) {
+                -orderSpec(oid, oit, ov);              // 清空队列，避免下一单撞 setOrder
+            }
         }
-        ?orderStatus(pp, "fulfilled");                 // 安全检查：零件全到才能 deliver
-        !deliver(pp);                                  // DeliverOrder：status → cleared
-        cartago.operation(mId, orderFulfilled(id, value));
         !orderLoop(pp);                                // 下一张
     }
 

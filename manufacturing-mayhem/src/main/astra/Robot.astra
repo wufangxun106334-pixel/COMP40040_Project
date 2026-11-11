@@ -15,30 +15,35 @@ agent Robot extends Base {
         S.sleep(1000);
     }
 
-    // 搬运：去起点装货 → 去终点卸货 → 回充电点充满 → 回执
+    // 搬运：去起点装货 → 去终点卸货 → 回充电点充满 → 回执；任一步失败回 failure
     plan @message(request, string sender, transfer(string from, string to)) {
-        cartago.println("received request for transfer from: "  + from + " to: " +to);
+        try {
+            cartago.println("received request for transfer from: "  + from + " to: " +to);
 
-        !at(S.name(), from);
-        !holding(S.name(), string _);
-        !at(S.name(), to);
-        !empty(S.name());
+            !at(S.name(), from);
+            !holding(S.name(), string _);
+            !at(S.name(), to);
+            !empty(S.name());
 
-        cartago.println("completed transfer from: "  + from + " to: " +to);
+            cartago.println("completed transfer from: "  + from + " to: " +to);
 
-        !at(S.name(), S.name()+"-charger");
-        ?robot(S.name(), cartago.ArtifactId rid);
-        ?maxEnergy(S.name(), int maxE);
-        ?energy(S.name(), int e);
-        cartago.println("Charging...");
-        while (e < maxE) {
-            cartago.operation(rid, charge());
-            ?energy(S.name(), int e2);
-            e = e2;
+            !at(S.name(), S.name()+"-charger");
+            ?robot(S.name(), cartago.ArtifactId rid);
+            ?maxEnergy(S.name(), int maxE);
+            ?energy(S.name(), int e);
+            cartago.println("Charging...");
+            while (e < maxE) {
+                cartago.operation(rid, charge());
+                ?energy(S.name(), int e2);
+                e = e2;
+            }
+            cartago.println("Charged...");
+
+            send(inform, sender, transferred(from, to));
+        } recover {
+            cartago.println("transfer failed: " + from + " -> " + to);
+            send(failure, sender, transfer(from, to));
         }
-        cartago.println("Charged...");
-
-        send(inform, sender, transferred(from, to));
     }
 
 }

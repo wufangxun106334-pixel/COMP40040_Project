@@ -13,3 +13,7 @@ target/
 
 # 自动快照备份
 docs/backup/
+
+# 运行日志 / 临时文件
+manufacturing-mayhem/*.log
+manufacturing-mayhem/cp.txt

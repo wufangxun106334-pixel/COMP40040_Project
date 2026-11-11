@@ -141,7 +141,7 @@ tags: [COMP40040, GAIA, MAS, analysis, manufacturing-mayhem]
 | `transport(string from, string to, string item)` | PP → RB | 请求把 item 从 from 搬到 to |
 | `transfer(string from, string to)` | RB → T | 指派一次搬运（现有） |
 | `transferred(string from, string to)` | T → RB/PP | 完成回执（现有） |
-| `failure(string reason)` | T → RB/PP | 失败回执（**新增，防死锁**） |
+| `failure(transfer(from, to))` | T → RB | 失败回执（**新增，防死锁**，M4-4 已实现） |
 | `operate(string ws)` | PP → WM | 请求运行工作站 |
 | `outputReady(string ws, string item)` | WM → PP | 产出就绪 |
 | `orderStarted(string id)` / `orderFulfilled(string id, int value)` | OM → MK | 订单事件；时间戳由 `Metrics` 用 `System.currentTimeMillis()` 统一取，保证单一时钟 |
@@ -205,7 +205,7 @@ flowchart LR
 6. **一个 zone 同时至多 1 个机器人**（安全属性，Floorplan 强制）。
 7. **一个机器人同一时刻至多 1 个搬运任务**（RB 强制）。
 8. **订单未 FULFILLED 不得 CLEARED**；未 CLEARED 不得装新单（OM 强制）。
-9. **任何失败必须回执** `failure`，否则会重演当前代码的 `Main` 永久 `wait` 死锁（`Robot.astra` 目前无失败回执）。
+9. **任何失败必须回执** `failure`，否则会重演当前代码的 `Main` 永久 `wait` 死锁（M4-4 已实现：`Robot` 的 `try/recover` 回 `failure`，`Main` 记 `failed` 后让订单失败）。
 
 ---
 

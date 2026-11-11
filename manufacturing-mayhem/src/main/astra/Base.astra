@@ -39,6 +39,7 @@ agent Base {
     types comms {
         formula transfer(string, string);
         formula transferred(string, string);
+        formula failed(string, string);             // 搬运失败回执
     }
 
     module Cartago cartago;
