@@ -149,7 +149,7 @@ graph LR
 | **M2** 动态场景 | coding | **ASTRA** | 去掉 35 处硬编码 `ap1` / `r1`，改成列表循环创建 | ✅ 完成（M2-1～M2-4） |
 | **M3** 订单闭环 | coding | ASTRA | LoadOrder → DeliverOrder → 换单；多层依赖；订单价值 | ✅ 完整运行通过：o1+o2+o3，ordersDone=3，totalValue=50，225 秒 |
 | **M4** 失败回执 | coding | `Robot.astra`、`Main.astra` | `failure` 回执，防永久等待；多机器人空闲分配 | ✅ 故障注入通过；r1/r2 各 6 次搬运，三单 176 秒 |
-| **M6** 报告 + 视频 | 非 coding | — | 英文 report、3–5 分钟视频 | ⬜ |
+| **M6** 报告 + 视频 | 非 coding | `docs/report-draft.md`、`docs/design-GAIA.md` | 英文 report、英文 GAIA 设计、3–5 分钟视频 | 🟡 报告初稿 + 设计英文版完成，待审阅；视频未开始 |
 
 > **提醒**
 > 1. Design 不是一次性的：coding 中若发现设计走不通，**回头改 [M0-GAIA-分析模型.md](M0-GAIA-分析模型.md) §9**，保持 design ↔ implementation 一致。
